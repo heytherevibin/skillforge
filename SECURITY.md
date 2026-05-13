@@ -22,7 +22,7 @@ We aim to acknowledge valid reports within a few business days.
 
 ## npm and supply chain
 
-- Use an **automation token** with minimal scope for **`NPM_TOKEN`** in GitHub Actions.
+- For **`NPM_TOKEN`** in GitHub Actions, use npm’s **Automation** token type so **`npm publish` in** CI does not hit **`EOTP`** (interactive 2FA). Classic “Publish” tokens can still require a one-time password, which CI cannot supply.
 - Keep **2FA** enabled on the npm account that owns the `@heytherevibin` scope.
 - Prefer pinning action versions or reviewing Dependabot PRs before merge.
 

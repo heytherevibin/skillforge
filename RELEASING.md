@@ -16,7 +16,13 @@ In the GitHub UI, open **Actions** and look for **CI** and **Release** (not the 
 
 ## Publish to npm and attach a GitHub Release (happy path)
 
-You need the **`NPM_TOKEN`** repository secret (npm automation token with publish access for `@heytherevibin/skillforge`). Enable **2FA** on your npm account.
+You need the **`NPM_TOKEN`** repository secret. **Important:** use an npm **Automation** token (recommended name on npm: *Automation*), not a classic token that still triggers **2FA at publish** from CI.
+
+- Create: [npm → Access Tokens → Generate New Token → **Automation**](https://www.npmjs.com/settings/~/tokens)
+- Automation tokens are meant for CI and **do not require `--otp`** on `npm publish`.
+- If CI fails with **`npm error code EOTP`** (“requires a one-time password”), your secret is almost certainly the wrong token type—replace **`NPM_TOKEN`** with a new **Automation** token and re-run the **Release** workflow.
+
+Keep **2FA** enabled on your npm account; Automation tokens are the supported way to publish from GitHub Actions without pasting TOTPs into logs.
 
 1. On `main`, set **`version`** in `package.json` to the version you are releasing (e.g. `0.2.2`).
 2. Commit and **`git push origin main`**. Wait for **CI** to pass.
@@ -60,3 +66,16 @@ Python (syntax only):
 ```bash
 for f in python/app/main.py python/app/cli.py python/app/mcp_server.py python/app/auth.py; do python3 -m py_compile "$f"; done
 ```
+
+## Troubleshooting: `EOTP` / one-time password in CI
+
+**Symptom:** `npm error code EOTP` / “This operation requires a one-time password from your authenticator.”
+
+**Cause:** The token in **`NPM_TOKEN`** is not an **Automation** token (or npm is treating the publish as needing interactive 2FA).
+
+**Fix:**
+
+1. Revoke the old CI token on npm if you want to limit blast radius.
+2. Generate a new **[Automation](https://www.npmjs.com/settings/~/tokens)** token for the account that owns **`@heytherevibin`**.
+3. GitHub repo → **Settings → Secrets and variables → Actions** → update **`NPM_TOKEN`**.
+4. Re-run the failed **Release** workflow, or delete and re-push the release tag (see “Recover if a tag exists…” above) so publish runs again.
