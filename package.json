@@ -1,6 +1,6 @@
 {
   "name": "@heytherevibin/skillforge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Adaptive skill orchestrator for Claude. Plug-and-play routing layer that picks the right skills for each prompt, learns from usage, and re-routes mid-conversation.",
   "keywords": [
     "claude",
