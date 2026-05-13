@@ -2,11 +2,11 @@
 MCP server for skillforge.
 
 Exposes skill routing as MCP tools so MCP-aware clients (Claude Desktop,
-Claude Code, Cursor, etc.) can use the orchestrator without running the
-HTTP server.
+Claude Code, Cursor, etc.) can use the orchestrator locally.
 
 Tools exposed:
   route_skills / skillforge_bootstrap — routing (+ optional project materialize).
+  search_skills / explain_route / get_skill — retrieval, debugging, deterministic fetch.
   materialize_project — .cursor/rules, docs/SKILLFORGE-PRD.md, CLAUDE.md block.
   list_skills, skill_feedback, skill_referenced, disable_skill.
 
@@ -25,6 +25,8 @@ from pathlib import Path
 
 from app.db_paths import resolve_orchestrator_db
 from app.main import (
+    TOP_K_CANDIDATES,
+    MAX_ACTIVE_SKILLS,
     build_router_and_skills,
     format_context_items_markdown,
     init_db,
@@ -39,6 +41,8 @@ from app.main import (
 from app.materialize import materialize_project_files
 from app.mcp_contract import MCP_RESPONSE_SCHEMA_VERSION, build_route_skills_meta
 from app.redaction import redaction_enabled, redact_display_path
+from app.route_policies import load_route_policies_config, merge_policy_includes
+from app.routing_signals import build_route_query_text
 
 
 def _env_truthy(name: str, default: str = "1") -> bool:
@@ -85,7 +89,7 @@ class MCPServer:
         self._db_cache: dict[str, sqlite3.Connection] = {}
 
     def _mcp_user_id(self, args: dict) -> str:
-        """Per-tool user namespace for weights/sessions/events (aligned with HTTP bearer user id)."""
+        """Per-tool user namespace for weights/sessions/events."""
         raw = (
             args.get("user_id")
             or os.getenv("SKILLFORGE_MCP_USER_ID", "")
@@ -185,7 +189,7 @@ class MCPServer:
         return {
             "protocolVersion": "2024-11-05",
             "capabilities": caps,
-            "serverInfo": {"name": "skillforge", "version": "0.7.0"},
+            "serverInfo": {"name": "skillforge", "version": "0.7.1"},
         }
 
     def handle_tools_list(self, params):
@@ -231,10 +235,78 @@ class MCPServer:
                             },
                             "user_id": {
                                 "type": "string",
-                                "description": "Logical user id for weights/sessions/events (same as HTTP user id string)",
+                                "description": "Logical user id for weights/sessions/events",
                             },
                         },
                         "required": ["prompt"],
+                    },
+                },
+                {
+                    "name": "search_skills",
+                    "description": (
+                        "Embedding-only retrieval: top skills for a query with similarity scores "
+                        "and descriptions (no Haiku, no full route). Use to explore the catalog."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Search query or task text"},
+                            "limit": {
+                                "type": "integer",
+                                "description": f"Max skills to return (default {TOP_K_CANDIDATES})",
+                            },
+                            "project_root": {"type": "string"},
+                            "user_id": {"type": "string"},
+                        },
+                        "required": ["query"],
+                    },
+                },
+                {
+                    "name": "explain_route",
+                    "description": (
+                        "Debug routing: embedding facets for the shortlist (same query text as route_skills when "
+                        "`conversation` is passed — conversation-aware when SKILLFORGE_ROUTER_CONV_MAX_TURNS > 0), "
+                        "optional Haiku rerank, Haiku/embedding-only pick with reasoning, and policy merge audit. "
+                        "Does not write sessions or increment uses."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "prompt": {"type": "string"},
+                            "conversation": {"type": "array", "items": {"type": "object"}},
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max shortlist rows in facets (default TOP_K)",
+                            },
+                            "project_root": {"type": "string"},
+                            "user_id": {"type": "string"},
+                        },
+                        "required": ["prompt"],
+                    },
+                },
+                {
+                    "name": "get_skill",
+                    "description": (
+                        "Load one skill by name: full SKILL.md body or a short summary. "
+                        "Use for deterministic workflows when you already know the skill name."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "skill_name": {"type": "string"},
+                            "format": {
+                                "type": "string",
+                                "enum": ["full", "summary"],
+                                "description": "summary = description + first ~8k chars of body",
+                                "default": "full",
+                            },
+                            "max_chars": {
+                                "type": "integer",
+                                "description": "If > 0, truncate body to this many characters",
+                                "default": 0,
+                            },
+                        },
+                        "required": ["skill_name"],
                     },
                 },
                 {
@@ -358,6 +430,12 @@ class MCPServer:
 
         if name == "route_skills":
             return await self._tool_route_skills(args)
+        if name == "search_skills":
+            return self._tool_search_skills(args)
+        if name == "explain_route":
+            return await self._tool_explain_route(args)
+        if name == "get_skill":
+            return self._tool_get_skill(args)
         if name == "list_skills":
             return self._tool_list_skills(args)
         if name == "skill_feedback":
@@ -456,6 +534,150 @@ class MCPServer:
         return {
             "content": [{"type": "text", "text": response_text}],
             "_meta": meta,
+        }
+
+    def _tool_search_skills(self, args):
+        query = (args.get("query") or "").strip()
+        user_id = self._mcp_user_id(args)
+        pr = self._project_root_from_args(args)
+        db_path = resolve_orchestrator_db(pr)
+        if not query:
+            return {
+                "content": [{"type": "text", "text": "query is required."}],
+                "isError": True,
+            }
+        try:
+            limit = int(args.get("limit") or TOP_K_CANDIDATES)
+        except (TypeError, ValueError):
+            limit = TOP_K_CANDIDATES
+        limit = max(1, min(limit, 50))
+        con = self._get_con(args)
+        facets = self.router.shortlist_with_facets(query, con, k=limit, user_id=user_id)
+        lines = ["# search_skills — embedding shortlist", ""]
+        for f in facets:
+            lines.append(
+                f"- **{f['name']}** (cos {f['cosine_similarity']}, score {f['routing_score']}): "
+                f"{(f.get('description_preview') or '')[:220]}"
+            )
+        text = "\n".join(lines)
+        return {
+            "content": [{"type": "text", "text": text}],
+            "_meta": {
+                "schema_version": MCP_RESPONSE_SCHEMA_VERSION,
+                "tool": "search_skills",
+                "orchestrator_db": redact_display_path(db_path) if redaction_enabled() else str(db_path),
+                "results": facets,
+                "count": len(facets),
+            },
+        }
+
+    async def _tool_explain_route(self, args):
+        prompt = (args.get("prompt") or "").strip()
+        conversation = args.get("conversation") or []
+        user_id = self._mcp_user_id(args)
+        pr = self._project_root_from_args(args)
+        db_path = resolve_orchestrator_db(pr)
+        if not prompt:
+            return {
+                "content": [{"type": "text", "text": "prompt is required."}],
+                "isError": True,
+            }
+        try:
+            limit = int(args.get("limit") or TOP_K_CANDIDATES)
+        except (TypeError, ValueError):
+            limit = TOP_K_CANDIDATES
+        limit = max(1, min(limit, 50))
+        con = self._get_con(args)
+        route_query = build_route_query_text(prompt, conversation)
+        facets = self.router.shortlist_with_facets(route_query, con, k=limit, user_id=user_id)
+        candidates = self.router.shortlist(route_query, con, user_id=user_id)
+        candidates = await self.router.rerank_candidates_haiku(route_query, conversation, candidates)
+        picked, reasoning = await self.router.pick_final(
+            prompt, conversation, candidates, route_query=route_query
+        )
+        policies_cfg = load_route_policies_config(pr)
+        merged, policy_audit = merge_policy_includes(
+            prompt,
+            list(picked),
+            policies_cfg,
+            self.router._by_name,
+            con,
+            user_id,
+            max_active=MAX_ACTIVE_SKILLS,
+        )
+        router_mode = "full" if self.router.anthropic else "embedding-only"
+        explain = {
+            "schema_version": MCP_RESPONSE_SCHEMA_VERSION,
+            "tool": "explain_route",
+            "orchestrator_db": redact_display_path(db_path) if redaction_enabled() else str(db_path),
+            "router_mode": router_mode,
+            "embedding_shortlist": facets,
+            "picked_before_policy": list(picked),
+            "picked_after_policy": merged,
+            "router_reasoning": reasoning,
+            "policy": {
+                "rules_loaded": len(policies_cfg.get("rules") or [])
+                if isinstance(policies_cfg.get("rules"), list)
+                else 0,
+                "audit": policy_audit,
+            },
+        }
+        lines = [
+            "# explain_route — routing diagnostics (no DB writes)",
+            "",
+            f"**Router:** {router_mode}",
+            f"**Picked (router):** {', '.join(picked) if picked else '_(none)_'}",
+            f"**After policies:** {', '.join(merged) if merged else '_(none)_'}",
+            f"**Reasoning:** {reasoning}" if reasoning else "**Reasoning:** _(n/a)_",
+            "",
+            "## Shortlist (embedding)",
+        ]
+        for f in facets[:15]:
+            lines.append(
+                f"- `{f['name']}` cos={f['cosine_similarity']} weight={f['learned_weight']} "
+                f"score={f['routing_score']}"
+            )
+        if policy_audit:
+            lines.extend(["", "## Policy audit"])
+            for row in policy_audit[:30]:
+                lines.append(f"- {row}")
+        body = "\n".join(lines)
+        return {"content": [{"type": "text", "text": body}], "_meta": explain}
+
+    def _tool_get_skill(self, args):
+        name = (args.get("skill_name") or "").strip()
+        fmt = (args.get("format") or "full").strip().lower()
+        if fmt not in ("full", "summary"):
+            fmt = "full"
+        max_chars = args.get("max_chars")
+        try:
+            mc = int(max_chars) if max_chars is not None else 0
+        except (TypeError, ValueError):
+            mc = 0
+        if not name or name not in self.skills:
+            return {
+                "content": [{"type": "text", "text": f"Unknown skill: {name or '(empty)'}"}],
+                "isError": True,
+            }
+        s = self.skills[name]
+        if fmt == "summary":
+            body = f"{s.description}\n\n---\n\n{(s.body or '')[:8000]}"
+        else:
+            body = s.body or ""
+        if mc > 0:
+            body = body[:mc]
+        header = f"# get_skill: `{name}`\n**Source:** {s.source} · **format:** {fmt}\n\n"
+        text = header + body
+        return {
+            "content": [{"type": "text", "text": text}],
+            "_meta": {
+                "schema_version": MCP_RESPONSE_SCHEMA_VERSION,
+                "tool": "get_skill",
+                "skill_name": name,
+                "source": s.source,
+                "format": fmt,
+                "chars": len(body),
+            },
         }
 
     def _tool_list_skills(self, args):

@@ -154,7 +154,10 @@ With **Haiku** routing (uses your Anthropic key in the MCP process):
 
 | Tool | Purpose |
 |------|---------|
-| `route_skills` | Returns routed **`SKILL.md`** context (chunks or full body). Pass **`project_root`** for per-repo SQLite under **`.skillforge/orchestrator.db`**. Optional **`include_project_rag`** (after **`skillforge index --project-root=…`**), **`session_id`**, **`user_id`** / **`SKILLFORGE_MCP_USER_ID`**, or env **`SKILLFORGE_PROJECT_ROOT`**. |
+| `route_skills` | Returns routed **`SKILL.md`** context (chunks or full body). Pass **`project_root`** for per-repo SQLite under **`.skillforge/orchestrator.db`**. Optional **`include_project_rag`** (after **`skillforge index --project-root=…`**), **`session_id`**, **`user_id`** / **`SKILLFORGE_MCP_USER_ID`**, or env **`SKILLFORGE_PROJECT_ROOT`**. Route **`event.policy`** in SQLite logs policy merge audit when rules apply. |
+| `search_skills` | Embedding-only shortlist for a **`query`** (scores + description snippets); does not run Haiku or mutate sessions. Optional **`limit`** (max 50). |
+| `explain_route` | Same routing signal as **`route_skills`** without writing SQLite (**`picked_before_policy`**, **`picked_after_policy`**, shortlist facets, policy audit). For debugging. |
+| `get_skill` | Fetch one catalog skill by **`skill_name`**; **`format`**: **`full`** or **`summary`**; optional **`max_chars`**. |
 | `list_skills` | Catalog overview; optional **`user_id`** scopes usage stats. |
 | `skill_feedback` | Feedback for the learning loop; optional **`user_id`**, **`session_id`** (stored with events). |
 | `skill_referenced` | Mark a routed skill as **used** in the reply (increments **`referenced`** + weight; optional **`user_id`**). |
@@ -196,9 +199,13 @@ skillforge skills list
 ---
 name: my-skill
 description: Clear trigger conditions—used by the router.
+triggers: When the user asks about X or mentions Y.
+anti_triggers: Not for production deploy checks.
 ---
 # My Skill
 ```
+
+Optional **`triggers`** / **`anti_triggers`** strings are embedded with the summary card and shown to the Haiku router (they do not change chunk RAG, which still keys off the current user message).
 
 Register with `skillforge skills add ./my-skill` or copy the folder to **`~/.skillforge/skills/`**.
 
@@ -217,16 +224,38 @@ skillforge pack remove <name>
 ## Routing pipeline
 
 ```
-User prompt
-    → Local embeddings (sentence-transformers)
-    → Cosine similarity + per-user weights
+User prompt (+ optional recent conversation for the shortlist query)
+    → Local embeddings (sentence-transformers) on skill **cards** (title, description, optional triggers)
+    → Cosine similarity ± hybrid keyword/BM25 fusion + per-user weights
     → Top-K candidates
+    → Optional Haiku **rerank** on the shortlist (`SKILLFORGE_HAIKU_RERANK`)
     → Router model (Haiku) selects final active skills — *or* embedding-only mode takes top-N from candidates
     → Skill bodies injected; response model answers (e.g. Opus)
     → Usage signals update weights (optional)
 ```
 
 Re-route: when overlap between successive active sets falls below a configurable threshold, the pipeline selects a new set for the next turn. Events are stored in SQLite; stream them with **`skillforge events --watch`**.
+
+---
+
+## Route policies (optional)
+
+Rules use **`if_text_matches`** as a Python **`re.search`** pattern (with **`re.DOTALL`**) on the user **`prompt`**. **`include`** is a skill name or list of names. Matched skills are **appended** after Haiku/embedding picks until **`SKILLFORGE_MAX_ACTIVE`**.
+
+**Load order:** env **`SKILLFORGE_ROUTE_POLICIES`** (inline JSON) → **`SKILLFORGE_ROUTE_POLICIES_FILE`** → **`<project_root>/.skillforge/policies.json`** → **`<project_root>/skillforge-policies.json`**.
+
+Example **`.skillforge/policies.json`**:
+
+```json
+{
+  "rules": [
+    {
+      "if_text_matches": "(?i)(auth|oauth|jwt|password|login)",
+      "include": ["security-review"]
+    }
+  ]
+}
+```
 
 ---
 
@@ -243,6 +272,16 @@ Environment variables (see also inline help and server defaults):
 | `SKILLFORGE_TOP_K` | `15` | Embedding shortlist size. |
 | `SKILLFORGE_MAX_ACTIVE` | `7` | Maximum skills injected per turn. |
 | `SKILLFORGE_REROUTE_THRESHOLD` | `0.4` | Re-route sensitivity (Jaccard distance). |
+| `SKILLFORGE_ROUTER_CONV_MAX_TURNS` | `0` | Include this many recent **conversation** messages in the **embedding shortlist** query (`0` = current user message only, legacy). |
+| `SKILLFORGE_ROUTER_CONV_MSG_CHARS` | `320` | Max characters per message when building the shortlist query. |
+| `SKILLFORGE_ROUTER_HYBRID` | `off` | `off` = dense cosine only. `keyword` = fuse with token overlap on skill cards. `bm25` = fuse with **BM25** (requires **`rank-bm25`**; falls back to keyword if missing). |
+| `SKILLFORGE_ROUTER_HYBRID_ALPHA` | `0.72` | Hybrid weight on **dense** similarity (`1` = dense only; `0` = sparse only). |
+| `SKILLFORGE_ROUTER_PROMPT_HISTORY_MSGS` | `8` | Max conversation turns sent to the **Haiku** router and reranker. |
+| `SKILLFORGE_ROUTER_PROMPT_HISTORY_CHARS` | `360` | Max characters per turn in router / rerank prompts. |
+| `SKILLFORGE_ROUTER_CATALOG_PREVIEW_CHARS` | `280` | Max characters of each skill **routing card** in the Haiku pick prompt. |
+| `SKILLFORGE_HAIKU_RERANK` | `0` | Set **`1`** / **`true`** to rerank the Top-K shortlist with Haiku before the final pick (extra API call). |
+| `SKILLFORGE_HAIKU_RERANK_MAX` | `SKILLFORGE_TOP_K` | Max candidates passed to the reranker. |
+| `SKILLFORGE_HAIKU_RERANK_MODEL` | *(same as router)* | Model id for reranking when set; otherwise **`SKILLFORGE_ROUTER_MODEL`**. |
 | `SKILLFORGE_CONTEXT_MODE` | `chunks` | `chunks` = embed **line-bounded chunks** from each picked skill body (RAG) up to **`SKILLFORGE_ROUTE_MAX_CHARS`**. `full_body` = inject entire **SKILL.md** per pick (legacy). |
 | `SKILLFORGE_CHUNK_MAX_CHARS` | `1200` | Max characters per chunk (before overlap split). |
 | `SKILLFORGE_CHUNK_OVERLAP` | `200` | Character overlap when hard-splitting an oversized section. |
@@ -264,6 +303,8 @@ Environment variables (see also inline help and server defaults):
 | `SKILLFORGE_SKILL_HOT_RELOAD` | `1` | When **`0`** / **`false`**, disable **SKILL.md** hot-reload; restart the MCP process to refresh the catalog. |
 | `SKILLFORGE_WATCH_SKILLS_INTERVAL` | `30` | Seconds between background catalog checks when hot reload is on. **`0`**: no background polling and no MCP **`tools.listChanged`**; **`tools/list`** and **`tools/call`** still reload when files change. |
 | `SKILLFORGE_MCP_LIST_CHANGED` | `1` | When **`0`** / **`false`**, never emit **`notifications/tools/list_changed`** (and **`listChanged`** is not advertised), even if a background interval is set. |
+| `SKILLFORGE_ROUTE_POLICIES` | `""` | Optional inline JSON policies document (see [Route policies](#route-policies-optional)). |
+| `SKILLFORGE_ROUTE_POLICIES_FILE` | `""` | Path to a policies JSON file. |
 
 ---
 
@@ -274,6 +315,7 @@ Optional **per-project** state (when **`project_root`** or **`SKILLFORGE_PROJECT
 ```
 <workspace>/.skillforge/
 ├── orchestrator.db   # SQLite: sessions, weights, events, **project_chunks** (after `skillforge index`)
+├── policies.json     # Optional route policies (see README)
 └── last_route.json   # Last route_skills snapshot (after a routed call)
 ```
 

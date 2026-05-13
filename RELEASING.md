@@ -77,7 +77,7 @@ npm test
 Python (syntax only):
 
 ```bash
-for f in python/app/main.py python/app/mcp_server.py python/app/events_cli.py python/app/materialize.py python/app/db_paths.py python/app/route_cli.py python/app/mcp_contract.py python/app/chunking.py python/app/project_index.py python/app/index_cli.py python/app/context_fusion.py python/app/redaction.py; do python3 -m py_compile "$f"; done
+for f in python/app/main.py python/app/mcp_server.py python/app/events_cli.py python/app/materialize.py python/app/db_paths.py python/app/route_cli.py python/app/mcp_contract.py python/app/chunking.py python/app/project_index.py python/app/index_cli.py python/app/context_fusion.py python/app/redaction.py python/app/route_policies.py python/app/routing_signals.py; do python3 -m py_compile "$f"; done
 ```
 
 ## Troubleshooting: `EOTP` / one-time password in CI

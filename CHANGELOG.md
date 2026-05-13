@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.8.0
+
+- **Smarter routing:** optional **conversation-aware** shortlist query (`SKILLFORGE_ROUTER_CONV_*`), **hybrid** retrieval (`SKILLFORGE_ROUTER_HYBRID` = `keyword` or `bm25` + `SKILLFORGE_ROUTER_HYBRID_ALPHA`), optional **Haiku rerank** (`SKILLFORGE_HAIKU_RERANK`, `SKILLFORGE_HAIKU_RERANK_MAX`, `SKILLFORGE_HAIKU_RERANK_MODEL`).
+- **Skill cards:** YAML **`triggers`** / **`anti_triggers`** on **`SKILL.md`** are parsed and folded into summary embeddings and router prompts via **`app/routing_signals.py`** (`skill_routing_card`). Chunk RAG still scores on the **current** user message.
+- **Dependency:** **`rank-bm25`** in `python/requirements.txt` (BM25 hybrid; optional at runtime if you use `keyword` only).
+
+## 0.7.1
+
+- **MCP:** **`search_skills`** (embedding shortlist + snippets), **`explain_route`** (routing diagnostics, no DB writes), **`get_skill`** (fetch one **`SKILL.md`** by name).
+- **Route policies:** optional **`SKILLFORGE_ROUTE_POLICIES`**, **`SKILLFORGE_ROUTE_POLICIES_FILE`**, or **`project_root`/** `.skillforge/policies.json` / **`skillforge-policies.json`** — regex rules append **`include`** skills after the router (capped by **`SKILLFORGE_MAX_ACTIVE`**). Audit stored on route events under **`policy`**.
+
 ## 0.7.0
 
 - **Breaking:** Removed the optional **HTTP API** (`skillforge start`), **`skillforge chat`** harness, and **`skillforge auth`** (bearer tokens were only used by HTTP). MCP (`skillforge mcp`), **`skillforge route`**, **`skillforge events`**, and **`skillforge index`** are unchanged.

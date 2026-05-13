@@ -8,7 +8,6 @@ Live usage: `skillforge events --watch` (terminal).
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import sqlite3
@@ -33,6 +32,14 @@ from app.project_index import (
     retrieve_project_context_items,
 )
 from app.redaction import redaction_enabled, redact_secret_patterns, sanitize_context_items
+from app.route_policies import load_route_policies_config, merge_policy_includes
+from app.routing_signals import (
+    build_route_query_text,
+    keyword_overlap_scores,
+    normalize_minmax,
+    skill_routing_card,
+    tokenize_skills_query,
+)
 
 # ---------- Config (env-driven so the Node wrapper controls paths) ----------
 BUNDLED_SKILLS = Path(os.getenv("SKILLFORGE_BUNDLED_SKILLS", "./skills"))
@@ -59,6 +66,21 @@ FUSION_POOL_PROJECT = max(8, int(os.getenv("SKILLFORGE_FUSION_POOL_PROJECT", "96
 FUSION_FULL_BODY_PREVIEW_CHARS = max(400, int(os.getenv("SKILLFORGE_FUSION_FULL_BODY_PREVIEW_CHARS", "4000")))
 CONTEXT_OVERHEAD_SKILL = 48
 CONTEXT_OVERHEAD_FILE = 56
+
+ROUTER_HYBRID_MODE = os.getenv("SKILLFORGE_ROUTER_HYBRID", "off").strip().lower()
+ROUTER_HYBRID_ALPHA = max(0.0, min(1.0, float(os.getenv("SKILLFORGE_ROUTER_HYBRID_ALPHA", "0.72"))))
+ROUTER_PROMPT_HISTORY_MSGS = max(1, int(os.getenv("SKILLFORGE_ROUTER_PROMPT_HISTORY_MSGS", "8")))
+ROUTER_PROMPT_HISTORY_CHARS = max(80, int(os.getenv("SKILLFORGE_ROUTER_PROMPT_HISTORY_CHARS", "360")))
+ROUTER_CATALOG_PREVIEW_CHARS = max(80, int(os.getenv("SKILLFORGE_ROUTER_CATALOG_PREVIEW_CHARS", "280")))
+HAIKU_RERANK_MAX = max(3, int(os.getenv("SKILLFORGE_HAIKU_RERANK_MAX", str(TOP_K_CANDIDATES))))
+
+
+def _hybrid_mode_active(mode: str) -> bool:
+    return mode not in ("", "off", "0", "false", "no")
+
+
+def _env_truthy(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() not in ("0", "false", "no", "")
 
 
 def _context_budget_unified() -> int:
@@ -123,6 +145,8 @@ class Skill:
     source: str  # "bundled" | "user"
     disabled: bool = False
     embedding: np.ndarray | None = None
+    triggers: str = ""
+    anti_triggers: str = ""
 
 
 def parse_skill_md(path: Path, source: str) -> Skill | None:
@@ -138,6 +162,8 @@ def parse_skill_md(path: Path, source: str) -> Skill | None:
     name = path.parent.name
     title = name.replace("-", " ").title()
     description = ""
+    triggers = ""
+    anti_triggers = ""
     body = text
     if text.startswith("---"):
         end = text.find("---", 3)
@@ -167,6 +193,10 @@ def parse_skill_md(path: Path, source: str) -> Skill | None:
                         title = v
                     elif k == "description":
                         description = v
+                    elif k in ("triggers", "trigger"):
+                        triggers = v
+                    elif k in ("anti_triggers", "anti-triggers"):
+                        anti_triggers = v
                 i += 1
     if not description:
         for chunk in body.split("\n\n"):
@@ -174,7 +204,15 @@ def parse_skill_md(path: Path, source: str) -> Skill | None:
             if chunk and not chunk.startswith("#"):
                 description = chunk[:500]
                 break
-    return Skill(name=name, title=title, description=description, body=body, source=source)
+    return Skill(
+        name=name,
+        title=title,
+        description=description,
+        body=body,
+        source=source,
+        triggers=triggers,
+        anti_triggers=anti_triggers,
+    )
 
 
 def load_all_skills() -> list[Skill]:
@@ -325,8 +363,26 @@ class Router:
             "full_body",
         ) else "chunks"
         self._by_name: dict[str, Skill] = {s.name: s for s in skills}
-        texts = [f"{s.title}: {s.description}" for s in skills]
-        print(f"[skillforge] Embedding {len(skills)} skills (summary)...", file=sys.stderr)
+        self._hybrid_mode = ROUTER_HYBRID_MODE
+        self._hybrid_alpha = ROUTER_HYBRID_ALPHA
+        self._routing_cards = [skill_routing_card(s) for s in skills]
+        self._bm25 = None
+        if self._hybrid_mode == "bm25" and skills:
+            try:
+                from rank_bm25 import BM25Okapi
+
+                toks = [tokenize_skills_query(c) for c in self._routing_cards]
+                if any(toks):
+                    self._bm25 = BM25Okapi(toks)
+            except ImportError:
+                print(
+                    "[skillforge] SKILLFORGE_ROUTER_HYBRID=bm25 but rank-bm25 is not installed; "
+                    "using keyword overlap for sparse signal.",
+                    file=sys.stderr,
+                )
+
+        texts = self._routing_cards
+        print(f"[skillforge] Embedding {len(skills)} skills (summary cards)...", file=sys.stderr)
         embeddings = embed_model.encode(texts, show_progress_bar=False, convert_to_numpy=True)
         for s, e in zip(skills, embeddings):
             s.embedding = e / np.linalg.norm(e)
@@ -355,23 +411,48 @@ class Router:
                 self._chunk_embeddings = ce
             print(
                 f"[skillforge] Ready. {len(skills)} skills; chunk matrix {self._chunk_embeddings.shape}; "
-                f"context_mode={self.context_mode}",
+                f"context_mode={self.context_mode}; router_hybrid={self._hybrid_mode}",
                 file=sys.stderr,
             )
         else:
             print(
                 f"[skillforge] Ready. {len(skills)} skills, matrix shape: {self.matrix.shape}; "
-                f"context_mode={self.context_mode}",
+                f"context_mode={self.context_mode}; router_hybrid={self._hybrid_mode}",
                 file=sys.stderr,
             )
 
-    def shortlist(self, prompt, con, k=TOP_K_CANDIDATES, user_id=""):
+    def _sparse_scores(self, route_query: str) -> np.ndarray:
+        if not _hybrid_mode_active(self._hybrid_mode):
+            return np.zeros(len(self.skills), dtype=np.float64)
+        if self._hybrid_mode == "keyword":
+            return keyword_overlap_scores(route_query, self._routing_cards)
+        if self._hybrid_mode == "bm25":
+            if self._bm25 is not None:
+                q = tokenize_skills_query(route_query)
+                if not q:
+                    return np.zeros(len(self.skills), dtype=np.float64)
+                return np.asarray(self._bm25.get_scores(q), dtype=np.float64)
+            return keyword_overlap_scores(route_query, self._routing_cards)
+        return keyword_overlap_scores(route_query, self._routing_cards)
+
+    def _base_routing_scores(self, route_query: str, q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Dense cosine similarities and fused ranking scores (or dense-only if hybrid off)."""
+        sims = (self.matrix @ q).flatten()
+        if not _hybrid_mode_active(self._hybrid_mode):
+            return sims, sims
+        sparse = self._sparse_scores(route_query)
+        d_norm = normalize_minmax(sims)
+        s_norm = normalize_minmax(sparse)
+        fused = self._hybrid_alpha * d_norm + (1.0 - self._hybrid_alpha) * s_norm
+        return sims, fused
+
+    def shortlist(self, route_query, con, k=TOP_K_CANDIDATES, user_id=""):
         if len(self.skills) == 0:
             return []
-        q = self.embed_model.encode(prompt, convert_to_numpy=True)
+        q = self.embed_model.encode(route_query, convert_to_numpy=True)
         q = q / np.linalg.norm(q)
-        sims = self.matrix @ q
-        biased = sims.copy()
+        sims, rank_scores = self._base_routing_scores(route_query, q)
+        biased = rank_scores.copy()
         for i, s in enumerate(self.skills):
             w, disabled = get_skill_weight(con, s.name, user_id=user_id)
             if disabled:
@@ -380,6 +461,53 @@ class Router:
                 biased[i] += w
         top_idx = np.argsort(-biased)[:k]
         return [(self.skills[i], float(sims[i])) for i in top_idx if biased[i] > -100]
+
+    def shortlist_with_facets(
+        self,
+        route_query: str,
+        con: sqlite3.Connection,
+        *,
+        k: int | None = None,
+        user_id: str = "",
+    ) -> list[dict[str, Any]]:
+        """Embedding shortlist with cosine sim, learned weight, and routing score (no LLM)."""
+        limit = k if k is not None else TOP_K_CANDIDATES
+        if len(self.skills) == 0:
+            return []
+        q = self.embed_model.encode(route_query, convert_to_numpy=True)
+        q = q / np.linalg.norm(q)
+        sims, rank_scores = self._base_routing_scores(route_query, q)
+        sparse_full = (
+            self._sparse_scores(route_query) if _hybrid_mode_active(self._hybrid_mode) else np.zeros(
+                len(self.skills), dtype=np.float64
+            )
+        )
+        biased = rank_scores.copy()
+        for i, s in enumerate(self.skills):
+            w, disabled = get_skill_weight(con, s.name, user_id=user_id)
+            if disabled:
+                biased[i] = -999.0
+            else:
+                biased[i] += w
+        top_idx = np.argsort(-biased)[:limit]
+        out: list[dict[str, Any]] = []
+        for i in top_idx:
+            if biased[i] <= -100:
+                continue
+            s = self.skills[i]
+            w, _dis = get_skill_weight(con, s.name, user_id=user_id)
+            out.append({
+                "name": s.name,
+                "title": s.title,
+                "description_preview": (s.description or "")[:280],
+                "cosine_similarity": round(float(sims[i]), 6),
+                "sparse_signal": round(float(sparse_full[i]), 6),
+                "learned_weight": round(float(w), 4),
+                "routing_score": round(float(biased[i]), 6),
+                "source": s.source,
+                "router_hybrid": self._hybrid_mode,
+            })
+        return out
 
     def build_context_items(
         self,
@@ -551,6 +679,77 @@ class Router:
             rel_out.append(float(rel[i]))
         return items, np.stack(em_rows), np.asarray(rel_out, dtype=np.float32)
 
+    async def rerank_candidates_haiku(
+        self,
+        route_query: str,
+        conversation: list | None,
+        candidates: list[tuple[Skill, float]],
+    ) -> list[tuple[Skill, float]]:
+        if (
+            not candidates
+            or self.anthropic is None
+            or not _env_truthy("SKILLFORGE_HAIKU_RERANK", "0")
+        ):
+            return candidates
+        cap = max(3, min(HAIKU_RERANK_MAX, len(candidates)))
+        head = candidates[:cap]
+        tail = candidates[cap:]
+        by_name = {s.name: (s, sc) for s, sc in head}
+        lines: list[str] = []
+        for idx, (s, _sc) in enumerate(head, start=1):
+            card = skill_routing_card(s)
+            preview = card[:220].replace("\n", " ")
+            lines.append(f"{idx}. {s.name} — {preview}")
+        hist = ""
+        if conversation:
+            msgs = conversation[-ROUTER_PROMPT_HISTORY_MSGS:]
+            parts: list[str] = []
+            for m in msgs:
+                if not isinstance(m, dict):
+                    continue
+                role = str(m.get("role") or "user")
+                c = str(m.get("content") or "").strip()
+                if not c:
+                    continue
+                parts.append(f"{role}: {c[:ROUTER_PROMPT_HISTORY_CHARS]}")
+            if parts:
+                hist = "\n\nConversation (recent):\n" + "\n".join(parts)
+        sys = (
+            "You reorder skill candidates by relevance to the user's task. "
+            "Output ONLY JSON: {\"order\": [\"skill_name\", ...]} with each candidate "
+            "skill name appearing exactly once, best match first. No extra keys."
+        )
+        user = (
+            f"Routing focus:\n{route_query}{hist}\n\nCandidates:\n" + "\n".join(lines)
+        )
+        try:
+            rerank_model = os.getenv("SKILLFORGE_HAIKU_RERANK_MODEL", "").strip() or ROUTER_MODEL
+            resp = await self.anthropic.messages.create(
+                model=rerank_model,
+                max_tokens=500,
+                system=sys,
+                messages=[{"role": "user", "content": user}],
+            )
+            text = resp.content[0].text.strip()
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            data = json.loads(text.strip())
+            order = data.get("order") or []
+            ordered: list[tuple[Skill, float]] = []
+            seen: set[str] = set()
+            for n in order:
+                if isinstance(n, str) and n in by_name and n not in seen:
+                    ordered.append(by_name[n])
+                    seen.add(n)
+            for s, sc in head:
+                if s.name not in seen:
+                    ordered.append((s, sc))
+            return ordered + tail
+        except Exception:
+            return candidates
+
     def pick_final_embedding_only(self, candidates):
         """Pick up to MAX_ACTIVE_SKILLS from the shortlist order (similarity + weights). No LLM call."""
         if not candidates:
@@ -560,26 +759,46 @@ class Router:
             "embedding-only: top candidates by similarity and learned weights"
         )
 
-    async def pick_final(self, prompt, conversation, candidates):
+    async def pick_final(
+        self,
+        prompt,
+        conversation,
+        candidates,
+        route_query: str | None = None,
+    ):
+        rq = (route_query if route_query is not None else prompt) or ""
         if self.anthropic is None:
             return self.pick_final_embedding_only(candidates)
         if not candidates:
             return [], "no candidates available"
         catalog = "\n".join(
-            f"- {s.name}: {s.description[:200]}" for s, _ in candidates
+            f"- {s.name}: {skill_routing_card(s)[:ROUTER_CATALOG_PREVIEW_CHARS]}"
+            for s, _ in candidates
         )
         recent = ""
         if conversation:
-            recent = "\n\nRecent conversation:\n" + "\n".join(
-                f"{m['role']}: {m['content'][:200]}" for m in conversation[-4:]
-            )
+            msgs = conversation[-ROUTER_PROMPT_HISTORY_MSGS:]
+            parts: list[str] = []
+            for m in msgs:
+                if not isinstance(m, dict):
+                    continue
+                role = str(m.get("role") or "user")
+                c = str(m.get("content") or "").strip()
+                if not c:
+                    continue
+                parts.append(f"{role}: {c[:ROUTER_PROMPT_HISTORY_CHARS]}")
+            if parts:
+                recent = "\n\nRecent conversation:\n" + "\n".join(parts)
         sys = (
             "You are a skill router. Given a user prompt and a candidate list of skills, "
             f"pick 0 to {MAX_ACTIVE_SKILLS} skills that would genuinely help answer this prompt. "
             "Be ruthless — only include a skill if it directly applies. Empty list is valid. "
             'Respond ONLY in JSON: {"skills": ["name1","name2"], "reasoning": "one sentence"}'
         )
-        user = f"User prompt:\n{prompt}{recent}\n\nCandidate skills:\n{catalog}"
+        user = (
+            f"User prompt:\n{prompt}\n\nRouting context (retrieval query):\n{rq}{recent}"
+            f"\n\nCandidate skills:\n{catalog}"
+        )
         try:
             resp = await self.anthropic.messages.create(
                 model=ROUTER_MODEL,
@@ -643,8 +862,23 @@ async def run_route_turn(
     """
     sid = session_id or str(uuid.uuid4())
     t0 = time.time()
-    candidates = router.shortlist(prompt, con, user_id=user_id)
-    picked_names, reasoning = await router.pick_final(prompt, conversation, candidates)
+    route_query = build_route_query_text(prompt, conversation)
+    candidates = router.shortlist(route_query, con, user_id=user_id)
+    candidates = await router.rerank_candidates_haiku(route_query, conversation, candidates)
+    picked_names, reasoning = await router.pick_final(
+        prompt, conversation, candidates, route_query=route_query
+    )
+    pr = (project_root or "").strip()
+    policies_cfg = load_route_policies_config(pr or None)
+    picked_names, policy_audit = merge_policy_includes(
+        prompt,
+        picked_names,
+        policies_cfg,
+        router._by_name,
+        con,
+        user_id,
+        max_active=MAX_ACTIVE_SKILLS,
+    )
     route_ms = (time.time() - t0) * 1000
 
     prev_active: set[str] = set()
@@ -658,7 +892,6 @@ async def run_route_turn(
     change = jaccard_change(prev_active, set(picked_names))
     rerouted = change >= REROUTE_THRESHOLD and bool(prev_active)
 
-    pr = (project_root or "").strip()
     want_fusion = CONTEXT_FUSION and include_project_rag and bool(pr)
     context_fusion: dict[str, Any] | None = None
     context_items: list[dict[str, Any]] = []
@@ -788,6 +1021,10 @@ async def run_route_turn(
         "include_project_rag": bool(include_project_rag and pr),
         "context_fusion": context_fusion,
         "context_redaction": context_redaction_stats,
+        "policy": {
+            "rules_loaded": len(policies_cfg.get("rules") or []) if isinstance(policies_cfg.get("rules"), list) else 0,
+            "audit": policy_audit,
+        },
         "chunk_sources_preview": [
             {
                 "skill": c.get("skill"),
