@@ -123,7 +123,7 @@ def main() -> None:
     db_path = resolve_orchestrator_db(pr)
 
     if not db_path.exists():
-        print("No database yet — run skillforge mcp or skillforge start first (or route once with this project_root).")
+        print("No database yet — run skillforge mcp first (or route once with this project_root).")
         print(f"  Expected: {db_path}")
         return
 

@@ -4,7 +4,6 @@ skillforge — skill orchestrator co-tool for Claude (MCP-first).
 Primary surface: MCP stdio — route_skills and related tools for hosts
 (Claude Desktop, Cursor, Claude Code).
 
-Optional: headless HTTP API (POST /chat, /events, …) for integrations.
 Live usage: `skillforge events --watch` (terminal).
 """
 from __future__ import annotations
@@ -16,19 +15,24 @@ import sqlite3
 import sys
 import time
 import uuid
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
 from anthropic import AsyncAnthropic
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
 
 from app.db_paths import global_db_path, resolve_orchestrator_db
+from app.chunking import SkillChunk, chunk_max_chars, chunk_overlap_chars, chunk_skill_body
+from app.context_fusion import mmr_select
+from app.project_index import (
+    ensure_project_index_schema,
+    load_project_fusion_pool,
+    project_rag_max_chars,
+    retrieve_project_context_items,
+)
+from app.redaction import redaction_enabled, redact_secret_patterns, sanitize_context_items
 
 # ---------- Config (env-driven so the Node wrapper controls paths) ----------
 BUNDLED_SKILLS = Path(os.getenv("SKILLFORGE_BUNDLED_SKILLS", "./skills"))
@@ -40,12 +44,28 @@ DB_PATH = global_db_path()
 
 EMBED_MODEL = os.getenv("SKILLFORGE_EMBED_MODEL", "all-MiniLM-L6-v2")
 ROUTER_MODEL = os.getenv("SKILLFORGE_ROUTER_MODEL", "claude-haiku-4-5-20251001")
-ANSWER_MODEL = os.getenv("SKILLFORGE_ANSWER_MODEL", "claude-opus-4-7")
 TOP_K_CANDIDATES = int(os.getenv("SKILLFORGE_TOP_K", "15"))
 MAX_ACTIVE_SKILLS = int(os.getenv("SKILLFORGE_MAX_ACTIVE", "7"))
 REROUTE_THRESHOLD = float(os.getenv("SKILLFORGE_REROUTE_THRESHOLD", "0.4"))
 # "" | "full" | "embedding" — embedding skips Haiku and takes top skills from the shortlist only.
 SKILLFORGE_ROUTER_MODE = os.getenv("SKILLFORGE_ROUTER_MODE", "").strip().lower()
+# chunks: RAG-style line-bounded chunks from picked skills. full_body: inject entire SKILL.md per pick (legacy).
+SKILLFORGE_CONTEXT_MODE = os.getenv("SKILLFORGE_CONTEXT_MODE", "chunks").strip().lower()
+ROUTE_MAX_CONTEXT_CHARS = int(os.getenv("SKILLFORGE_ROUTE_MAX_CHARS", "60000"))
+CONTEXT_FUSION = os.getenv("SKILLFORGE_CONTEXT_FUSION", "1").strip().lower() not in ("0", "false", "no", "")
+CONTEXT_MMR_LAMBDA = max(0.0, min(1.0, float(os.getenv("SKILLFORGE_CONTEXT_MMR_LAMBDA", "0.7"))))
+FUSION_POOL_SKILL = max(8, int(os.getenv("SKILLFORGE_FUSION_POOL_SKILL", "96")))
+FUSION_POOL_PROJECT = max(8, int(os.getenv("SKILLFORGE_FUSION_POOL_PROJECT", "96")))
+FUSION_FULL_BODY_PREVIEW_CHARS = max(400, int(os.getenv("SKILLFORGE_FUSION_FULL_BODY_PREVIEW_CHARS", "4000")))
+CONTEXT_OVERHEAD_SKILL = 48
+CONTEXT_OVERHEAD_FILE = 56
+
+
+def _context_budget_unified() -> int:
+    raw = os.getenv("SKILLFORGE_CONTEXT_BUDGET_CHARS", "").strip()
+    if raw:
+        return max(4000, int(raw))
+    return ROUTE_MAX_CONTEXT_CHARS + int(project_rag_max_chars())
 
 
 def build_router_and_skills(
@@ -235,6 +255,7 @@ def init_db(db_file: Path | None = None):
             con.execute(f"ALTER TABLE {table} ADD COLUMN user_id TEXT DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # already exists
+    ensure_project_index_schema(con)
     con.commit()
     return con
 
@@ -299,13 +320,50 @@ class Router:
         self.skills = skills
         self.embed_model = embed_model
         self.anthropic = anthropic
+        self.context_mode = SKILLFORGE_CONTEXT_MODE if SKILLFORGE_CONTEXT_MODE in (
+            "chunks",
+            "full_body",
+        ) else "chunks"
+        self._by_name: dict[str, Skill] = {s.name: s for s in skills}
         texts = [f"{s.title}: {s.description}" for s in skills]
-        print(f"[skillforge] Embedding {len(skills)} skills...")
+        print(f"[skillforge] Embedding {len(skills)} skills (summary)...", file=sys.stderr)
         embeddings = embed_model.encode(texts, show_progress_bar=False, convert_to_numpy=True)
         for s, e in zip(skills, embeddings):
             s.embedding = e / np.linalg.norm(e)
         self.matrix = np.stack([s.embedding for s in skills]) if skills else np.zeros((0, 0))
-        print(f"[skillforge] Ready. {len(skills)} skills, matrix shape: {self.matrix.shape}")
+
+        # Chunk index for CONTEXT_MODE=chunks
+        self._chunk_meta: list[tuple[str, SkillChunk]] = []
+        edim = int(embed_model.get_sentence_embedding_dimension())
+        self._chunk_embeddings: np.ndarray = np.zeros((0, edim))
+        if self.context_mode == "chunks" and skills:
+            flat_texts: list[str] = []
+            self._chunk_meta = []
+            mc = chunk_max_chars()
+            oc = chunk_overlap_chars()
+            for s in skills:
+                for ch in chunk_skill_body(s.body, max_chars=mc, overlap=oc):
+                    # Embed with in-chunk disambiguation
+                    flat_texts.append(f"{s.title} — {s.name}\n{ch.text}")
+                    self._chunk_meta.append((s.name, ch))
+            if flat_texts:
+                print(f"[skillforge] Embedding {len(flat_texts)} skill chunks...", file=sys.stderr)
+                ce = embed_model.encode(
+                    flat_texts, show_progress_bar=False, convert_to_numpy=True
+                )
+                ce = ce / np.linalg.norm(ce, axis=1, keepdims=True)
+                self._chunk_embeddings = ce
+            print(
+                f"[skillforge] Ready. {len(skills)} skills; chunk matrix {self._chunk_embeddings.shape}; "
+                f"context_mode={self.context_mode}",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[skillforge] Ready. {len(skills)} skills, matrix shape: {self.matrix.shape}; "
+                f"context_mode={self.context_mode}",
+                file=sys.stderr,
+            )
 
     def shortlist(self, prompt, con, k=TOP_K_CANDIDATES, user_id=""):
         if len(self.skills) == 0:
@@ -322,6 +380,176 @@ class Router:
                 biased[i] += w
         top_idx = np.argsort(-biased)[:k]
         return [(self.skills[i], float(sims[i])) for i in top_idx if biased[i] > -100]
+
+    def build_context_items(
+        self,
+        prompt: str,
+        skill_names: list[str],
+        max_total_chars: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return ordered context dicts: skill, line_start, line_end, text, score."""
+        cap = max_total_chars if max_total_chars is not None else ROUTE_MAX_CONTEXT_CHARS
+        if self.context_mode == "full_body":
+            out: list[dict[str, Any]] = []
+            for n in skill_names:
+                s = self._by_name.get(n)
+                if not s:
+                    continue
+                out.append({
+                    "skill": n,
+                    "path": None,
+                    "line_start": None,
+                    "line_end": None,
+                    "text": s.body,
+                    "score": 1.0,
+                })
+            return out
+        if not skill_names or self._chunk_embeddings.shape[0] == 0:
+            return []
+        allowed = set(skill_names)
+        indices = [i for i, (sn, _) in enumerate(self._chunk_meta) if sn in allowed]
+        if not indices:
+            return []
+        qv = self.embed_model.encode(prompt, convert_to_numpy=True)
+        qv = qv / np.linalg.norm(qv)
+        sub = self._chunk_embeddings[indices]
+        scores = (sub @ qv).flatten()
+        order = np.argsort(-scores)
+        out = []
+        total = 0
+        overhead = CONTEXT_OVERHEAD_SKILL
+        for o in order:
+            idx = indices[int(o)]
+            sn, ch = self._chunk_meta[idx]
+            piece_len = len(ch.text) + overhead
+            if total + piece_len > cap:
+                continue
+            out.append({
+                "skill": sn,
+                "path": None,
+                "line_start": ch.line_start,
+                "line_end": ch.line_end,
+                "text": ch.text,
+                "score": float(scores[int(o)]),
+            })
+            total += piece_len
+        return out
+
+    def build_fusion_skill_pool(
+        self,
+        prompt: str,
+        skill_names: list[str],
+        pool_limit: int,
+    ) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray]:
+        """Candidate skill chunks (or one row per skill in full_body) with embeddings for MMR."""
+        edim = int(self.embed_model.get_sentence_embedding_dimension())
+        if not skill_names:
+            return [], np.zeros((0, edim)), np.array([], dtype=np.float32)
+        qv = self.embed_model.encode(prompt, convert_to_numpy=True)
+        qv = np.asarray(qv, dtype=np.float32).reshape(-1)
+        qv = qv / max(float(np.linalg.norm(qv)), 1e-12)
+
+        if self.context_mode == "full_body":
+            ordered = [n for n in skill_names if n in self._by_name]
+            if not ordered:
+                return [], np.zeros((0, edim)), np.array([], dtype=np.float32)
+            texts = [
+                f"{self._by_name[n].title} — {n}\n{(self._by_name[n].body or '')[:FUSION_FULL_BODY_PREVIEW_CHARS]}"
+                for n in ordered
+            ]
+            em = self.embed_model.encode(texts, show_progress_bar=False, convert_to_numpy=True)
+            em = np.asarray(em, dtype=np.float32)
+            em = em / np.maximum(np.linalg.norm(em, axis=1, keepdims=True), 1e-12)
+            rel = (em @ qv).flatten()
+            order = np.argsort(-rel)[: min(pool_limit, em.shape[0])]
+            items: list[dict[str, Any]] = []
+            em_rows: list[np.ndarray] = []
+            rel_out: list[float] = []
+            for o in order:
+                i = int(o)
+                n = ordered[i]
+                s = self._by_name[n]
+                items.append({
+                    "skill": n,
+                    "path": None,
+                    "line_start": None,
+                    "line_end": None,
+                    "text": s.body,
+                    "score": float(rel[i]),
+                    "source": "skill",
+                })
+                em_rows.append(em[i])
+                rel_out.append(float(rel[i]))
+            return items, np.stack(em_rows), np.asarray(rel_out, dtype=np.float32)
+
+        if self._chunk_embeddings.shape[0] == 0:
+            return self._fusion_skill_pool_fallback_bodies(skill_names, qv, pool_limit)
+
+        allowed = set(skill_names)
+        indices = [i for i, (sn, _) in enumerate(self._chunk_meta) if sn in allowed]
+        if not indices:
+            return self._fusion_skill_pool_fallback_bodies(skill_names, qv, pool_limit)
+        sub = self._chunk_embeddings[indices]
+        scores = (sub @ qv).flatten()
+        order = np.argsort(-scores)[: min(pool_limit, len(indices))]
+        items = []
+        em_rows = []
+        rel_out = []
+        for o in order:
+            pos = int(o)
+            idx = indices[pos]
+            sn, ch = self._chunk_meta[idx]
+            items.append({
+                "skill": sn,
+                "path": None,
+                "line_start": ch.line_start,
+                "line_end": ch.line_end,
+                "text": ch.text,
+                "score": float(scores[pos]),
+                "source": "skill",
+            })
+            em_rows.append(sub[pos])
+            rel_out.append(float(scores[pos]))
+        return items, np.stack(em_rows), np.asarray(rel_out, dtype=np.float32)
+
+    def _fusion_skill_pool_fallback_bodies(
+        self,
+        skill_names: list[str],
+        qv: np.ndarray,
+        pool_limit: int,
+    ) -> tuple[list[dict[str, Any]], np.ndarray, np.ndarray]:
+        ordered = [n for n in skill_names if n in self._by_name]
+        edim = int(self.embed_model.get_sentence_embedding_dimension())
+        if not ordered:
+            return [], np.zeros((0, edim)), np.array([], dtype=np.float32)
+        texts = [
+            f"{self._by_name[n].title} — {n}\n{(self._by_name[n].body or '')[:FUSION_FULL_BODY_PREVIEW_CHARS]}"
+            for n in ordered
+        ]
+        em = self.embed_model.encode(texts, show_progress_bar=False, convert_to_numpy=True)
+        em = np.asarray(em, dtype=np.float32)
+        em = em / np.maximum(np.linalg.norm(em, axis=1, keepdims=True), 1e-12)
+        rel = (em @ qv).flatten()
+        order = np.argsort(-rel)[: min(pool_limit, em.shape[0])]
+        items = []
+        em_rows = []
+        rel_out = []
+        for o in order:
+            i = int(o)
+            n = ordered[i]
+            s = self._by_name[n]
+            items.append({
+                "skill": n,
+                "path": None,
+                "line_start": None,
+                "line_end": None,
+                "text": s.body,
+                "score": float(rel[i]),
+                "source": "skill",
+            })
+            em_rows.append(em[i])
+            rel_out.append(float(rel[i]))
+        return items, np.stack(em_rows), np.asarray(rel_out, dtype=np.float32)
 
     def pick_final_embedding_only(self, candidates):
         """Pick up to MAX_ACTIVE_SKILLS from the shortlist order (similarity + weights). No LLM call."""
@@ -381,6 +609,23 @@ def jaccard_change(old, new):
     return 1.0 - (inter / union)
 
 
+def format_context_items_markdown(context_items: list[dict[str, Any]]) -> str:
+    """Human-readable block list for MCP / CLI from context items (skills + optional project files)."""
+    blocks = []
+    for c in context_items:
+        ls, le = c.get("line_start"), c.get("line_end")
+        if ls is not None and le is not None:
+            loc = f" (lines {ls}-{le})"
+        else:
+            loc = " (full document)"
+        path = c.get("path")
+        if path:
+            blocks.append(f"### File: `{path}`{loc}\n\n{c['text']}\n")
+        else:
+            blocks.append(f"### Skill: {c['skill']}{loc}\n\n{c['text']}\n")
+    return "\n".join(blocks)
+
+
 async def run_route_turn(
     con: sqlite3.Connection,
     router: Router,
@@ -388,8 +633,11 @@ async def run_route_turn(
     conversation: list,
     user_id: str = "",
     session_id: str | None = None,
+    *,
+    project_root: str | None = None,
+    include_project_rag: bool = False,
 ) -> dict[str, Any]:
-    """Shared routing + session + telemetry for HTTP /chat and MCP route_skills.
+    """Shared routing + session + telemetry for MCP route_skills and ``skillforge route``.
 
     Updates sessions, skill usage stats, and writes a route row to events.
     """
@@ -410,6 +658,109 @@ async def run_route_turn(
     change = jaccard_change(prev_active, set(picked_names))
     rerouted = change >= REROUTE_THRESHOLD and bool(prev_active)
 
+    pr = (project_root or "").strip()
+    want_fusion = CONTEXT_FUSION and include_project_rag and bool(pr)
+    context_fusion: dict[str, Any] | None = None
+    context_items: list[dict[str, Any]] = []
+
+    proj_pool: list[dict[str, Any]] = []
+    proj_emb = np.zeros((0, int(router.embed_model.get_sentence_embedding_dimension())))
+    proj_rel = np.array([], dtype=np.float32)
+
+    if want_fusion:
+        try:
+            proj_pool, proj_emb, proj_rel = load_project_fusion_pool(
+                con, router.embed_model, prompt, FUSION_POOL_PROJECT
+            )
+        except Exception:
+            proj_pool = []
+            proj_emb = np.zeros((0, int(router.embed_model.get_sentence_embedding_dimension())))
+            proj_rel = np.array([], dtype=np.float32)
+
+    if want_fusion and proj_pool:
+        skill_pool, skill_emb, skill_rel = router.build_fusion_skill_pool(
+            prompt, picked_names, FUSION_POOL_SKILL
+        )
+        n_skill = len(skill_pool)
+        n_proj = len(proj_pool)
+        pool = skill_pool + proj_pool
+        if n_skill and n_proj:
+            em = np.vstack([skill_emb, proj_emb])
+            rel = np.concatenate([skill_rel, proj_rel])
+        elif n_skill:
+            em = skill_emb
+            rel = skill_rel
+        else:
+            em = proj_emb
+            rel = proj_rel
+        lens = np.array([len(c["text"]) for c in pool], dtype=np.int64)
+        ovh = np.array([
+            CONTEXT_OVERHEAD_SKILL if not c.get("path") else CONTEXT_OVERHEAD_FILE
+            for c in pool
+        ], dtype=np.int64)
+        budget = _context_budget_unified()
+        order, mmr_trace = mmr_select(
+            em,
+            rel,
+            lens,
+            char_budget=budget,
+            overhead_per_chunk=ovh,
+            lambda_mult=CONTEXT_MMR_LAMBDA,
+        )
+        for rank, idx in enumerate(order, start=1):
+            item = dict(pool[idx])
+            item.pop("source", None)
+            tr = mmr_trace[rank - 1]
+            item["mmr_rank"] = rank
+            item["mmr_score"] = tr["mmr"]
+            item["retrieval_relevance"] = tr["relevance"]
+            item["max_sim_to_prior"] = tr["max_sim_to_selected"]
+            context_items.append(item)
+        context_fusion = {
+            "enabled": True,
+            "lambda": CONTEXT_MMR_LAMBDA,
+            "budget_chars": budget,
+            "pool_skill": n_skill,
+            "pool_project": n_proj,
+            "selected_count": len(context_items),
+            "mmr_trace": mmr_trace,
+        }
+    else:
+        context_items = router.build_context_items(prompt, picked_names)
+        if picked_names and not context_items:
+            context_items = [
+                {
+                    "skill": n,
+                    "path": None,
+                    "line_start": None,
+                    "line_end": None,
+                    "text": router._by_name[n].body,
+                    "score": 1.0,
+                }
+                for n in picked_names
+                if n in router._by_name
+            ]
+        project_add: list[dict[str, Any]] = []
+        if include_project_rag and pr:
+            try:
+                project_add = retrieve_project_context_items(con, router.embed_model, prompt)
+            except Exception:
+                project_add = []
+        context_items = [*context_items, *project_add]
+        context_fusion = {"enabled": False}
+
+    project_rag_items_count = sum(1 for c in context_items if c.get("path"))
+
+    reasoning_out = reasoning
+    safe_prompt_snip = prompt[:300]
+    context_redaction_stats: dict[str, Any] = {"enabled": False, "secret_hits": 0, "path_hits": 0}
+    if redaction_enabled():
+        safe_prompt_snip, _ = redact_secret_patterns(prompt[:300])
+        sh, ph = sanitize_context_items(context_items)
+        context_redaction_stats = {"enabled": True, "secret_hits": sh, "path_hits": ph}
+        if reasoning_out:
+            reasoning_out, _ = redact_secret_patterns(reasoning_out)
+
     con.execute(
         """INSERT INTO sessions (id, user_id, created_at, active_skills, turn_count) VALUES (?, ?, ?, ?, 1)
            ON CONFLICT(id) DO UPDATE SET active_skills = ?, turn_count = turn_count + 1""",
@@ -423,225 +774,40 @@ async def run_route_turn(
         "type": "route",
         "session_id": sid,
         "user_id": user_id,
-        "prompt": prompt[:300],
+        "prompt": safe_prompt_snip,
         "candidates": [{"name": s.name, "score": sc} for s, sc in candidates[:10]],
         "picked": picked_names,
-        "reasoning": reasoning,
+        "reasoning": reasoning_out,
         "rerouted": rerouted,
         "change_pct": round(change * 100, 1),
         "route_ms": round(route_ms, 1),
         "ts": time.time(),
+        "context_mode": router.context_mode,
+        "context_items_count": len(context_items),
+        "project_rag_items_count": project_rag_items_count,
+        "include_project_rag": bool(include_project_rag and pr),
+        "context_fusion": context_fusion,
+        "context_redaction": context_redaction_stats,
+        "chunk_sources_preview": [
+            {
+                "skill": c.get("skill"),
+                "path": c.get("path"),
+                "line_start": c.get("line_start"),
+                "line_end": c.get("line_end"),
+                "mmr_rank": c.get("mmr_rank"),
+            }
+            for c in context_items[:24]
+        ],
     }
     log_event(con, sid, "route", event, user_id=user_id)
     return {
         "session_id": sid,
         "picked_names": picked_names,
-        "reasoning": reasoning,
+        "reasoning": reasoning_out,
         "candidates": candidates,
         "route_ms": route_ms,
         "rerouted": rerouted,
         "change": change,
         "event": event,
-    }
-
-
-# ---------- App ----------
-app_state: dict[str, Any] = {}
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print(f"[skillforge] Loading skills from {BUNDLED_SKILLS} + {USER_SKILLS}")
-    skills = load_all_skills()
-    print(f"[skillforge] Loaded {len(skills)} skills")
-    if not skills:
-        print("[skillforge] WARNING: no skills found")
-    embed_model = SentenceTransformer(EMBED_MODEL)
-    anthropic = AsyncAnthropic()
-    router_anthropic = None if SKILLFORGE_ROUTER_MODE == "embedding" else anthropic
-    if router_anthropic is None:
-        print("[skillforge] Router mode: embedding-only (Haiku step skipped; /chat still uses ANSWER model)")
-    print("[skillforge] Live usage (terminal): skillforge events --watch")
-    router = Router(skills, embed_model, router_anthropic)
-    con = init_db()
-    app_state.update(
-        skills={s.name: s for s in skills},
-        router=router,
-        anthropic=anthropic,
-        con=con,
-    )
-    yield
-    con.close()
-
-
-app = FastAPI(lifespan=lifespan, title="skillforge")
-
-
-class ChatRequest(BaseModel):
-    prompt: str
-    session_id: str | None = None
-    conversation: list[dict] = []
-
-
-class FeedbackRequest(BaseModel):
-    session_id: str
-    skill_name: str
-    thumbs: int
-
-
-class DisableRequest(BaseModel):
-    skill_name: str
-    disabled: bool
-
-
-@app.post("/chat")
-async def chat(req: ChatRequest, request: Request):
-    from app.auth import resolve_user
-    user_id = resolve_user(request)
-    router: Router = app_state["router"]
-    con = app_state["con"]
-    anthropic: AsyncAnthropic = app_state["anthropic"]
-
-    result = await run_route_turn(
-        con,
-        router,
-        req.prompt,
-        req.conversation,
-        user_id=user_id,
-        session_id=req.session_id,
-    )
-    session_id = result["session_id"]
-    picked_names = result["picked_names"]
-
-    skills_map = app_state["skills"]
-    skill_blocks = []
-    for n in picked_names:
-        s = skills_map.get(n)
-        if s:
-            skill_blocks.append(f'<skill name="{s.name}">\n{s.body}\n</skill>')
-    system_prompt = (
-        "You are a helpful assistant. The following skills have been dynamically loaded "
-        "for this turn based on the user's request. Use them when relevant; ignore them when not.\n\n"
-        + "\n\n".join(skill_blocks)
-    ) if skill_blocks else "You are a helpful assistant."
-
-    messages = req.conversation + [{"role": "user", "content": req.prompt}]
-
-    async def stream():
-        full_text = []
-        try:
-            async with anthropic.messages.stream(
-                model=ANSWER_MODEL,
-                max_tokens=4096,
-                system=system_prompt,
-                messages=messages,
-            ) as s:
-                async for chunk in s.text_stream:
-                    full_text.append(chunk)
-                    yield f"data: {json.dumps({'delta': chunk})}\n\n"
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
-            return
-        response_text = "".join(full_text)
-        for n in picked_names:
-            s = skills_map.get(n)
-            if not s:
-                continue
-            keywords = [w for w in s.body.split()[:50] if len(w) > 6][:5]
-            hits = sum(1 for kw in keywords if kw.lower() in response_text.lower())
-            if hits >= 2 or s.name in response_text.lower():
-                update_skill_stat(con, n, "referenced", 1, user_id=user_id)
-        yield f"data: {json.dumps({'done': True, 'session_id': session_id, 'picked': picked_names})}\n\n"
-
-    return StreamingResponse(stream(), media_type="text/event-stream")
-
-
-@app.post("/feedback")
-def feedback(req: FeedbackRequest, request: Request):
-    from app.auth import resolve_user
-    user_id = resolve_user(request)
-    con = app_state["con"]
-    field = "thumbs_up" if req.thumbs > 0 else "thumbs_down"
-    update_skill_stat(con, req.skill_name, field, 1, user_id=user_id)
-    log_event(con, req.session_id, "feedback",
-              {"skill": req.skill_name, "thumbs": req.thumbs},
-              user_id=user_id)
-    return {"ok": True}
-
-
-@app.post("/skills/disable")
-def disable(req: DisableRequest, request: Request):
-    from app.auth import resolve_user
-    user_id = resolve_user(request)
-    con = app_state["con"]
-    set_skill_disabled(con, req.skill_name, req.disabled, user_id=user_id)
-    return {"ok": True}
-
-
-@app.get("/skills")
-def list_skills(request: Request):
-    from app.auth import resolve_user
-    user_id = resolve_user(request)
-    con = app_state["con"]
-    skills_map = app_state["skills"]
-    out = []
-    for name, s in skills_map.items():
-        cur = con.execute(
-            "SELECT weight, uses, referenced, thumbs_up, thumbs_down, disabled FROM skill_weights WHERE user_id = ? AND skill_name = ?",
-            (user_id, name),
-        )
-        row = cur.fetchone()
-        weight, uses, ref, up, down, disabled = row if row else (0.0, 0, 0, 0, 0, 0)
-        out.append({
-            "name": name,
-            "title": s.title,
-            "description": s.description[:200],
-            "source": s.source,
-            "weight": weight,
-            "uses": uses,
-            "referenced": ref,
-            "thumbs_up": up,
-            "thumbs_down": down,
-            "disabled": bool(disabled),
-        })
-    out.sort(key=lambda x: -x["uses"])
-    return out
-
-
-@app.get("/events")
-def recent_events(request: Request, limit: int = 50):
-    from app.auth import resolve_user, auth_enabled
-    user_id = resolve_user(request)
-    con = app_state["con"]
-    if auth_enabled():
-        cur = con.execute(
-            "SELECT ts, session_id, event_type, payload FROM events WHERE user_id = ? ORDER BY ts DESC LIMIT ?",
-            (user_id, limit),
-        )
-    else:
-        cur = con.execute(
-            "SELECT ts, session_id, event_type, payload FROM events ORDER BY ts DESC LIMIT ?",
-            (limit,),
-        )
-    return [
-        {"ts": ts, "session_id": sid, "type": et, "payload": json.loads(p)}
-        for ts, sid, et, p in cur.fetchall()
-    ]
-
-
-@app.get("/")
-def root():
-    return {
-        "service": "skillforge",
-        "docs": "POST /chat, GET /events, GET /skills, GET /healthz",
-        "live_log": "skillforge events --watch",
-    }
-
-
-@app.get("/healthz")
-def health():
-    return {
-        "skills_loaded": len(app_state.get("skills", {})),
-        "ok": True,
-        "live_log": "skillforge events --watch",
+        "context_items": context_items,
     }

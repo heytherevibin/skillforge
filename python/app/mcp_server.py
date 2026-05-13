@@ -26,6 +26,7 @@ from pathlib import Path
 from app.db_paths import resolve_orchestrator_db
 from app.main import (
     build_router_and_skills,
+    format_context_items_markdown,
     init_db,
     load_all_skills,
     log_event,
@@ -36,6 +37,8 @@ from app.main import (
     Router,
 )
 from app.materialize import materialize_project_files
+from app.mcp_contract import MCP_RESPONSE_SCHEMA_VERSION, build_route_skills_meta
+from app.redaction import redaction_enabled, redact_display_path
 
 
 def _env_truthy(name: str, default: str = "1") -> bool:
@@ -96,6 +99,15 @@ class MCPServer:
             return str(raw).strip()
         env = os.getenv("SKILLFORGE_PROJECT_ROOT", "").strip()
         return env or None
+
+    @staticmethod
+    def _include_project_rag_from_args(args: dict) -> bool:
+        v = args.get("include_project_rag")
+        if v is True:
+            return True
+        if isinstance(v, str) and v.strip().lower() in ("1", "true", "yes"):
+            return True
+        return False
 
     def _get_con(self, args: dict):
         path = resolve_orchestrator_db(self._project_root_from_args(args))
@@ -173,7 +185,7 @@ class MCPServer:
         return {
             "protocolVersion": "2024-11-05",
             "capabilities": caps,
-            "serverInfo": {"name": "skillforge", "version": "0.2.1"},
+            "serverInfo": {"name": "skillforge", "version": "0.7.0"},
         }
 
     def handle_tools_list(self, params):
@@ -183,11 +195,14 @@ class MCPServer:
                     "name": "route_skills",
                     "description": (
                         "Route the user's prompt to the most relevant skills from the catalog "
-                        "and return their full SKILL.md bodies. The client should inject the "
-                        "returned content into the LLM's context. Returns up to 7 skills. "
-                        "Pass project_root (workspace path) for per-repo SQLite in .skillforge/ "
-                        "and learning; else use env SKILLFORGE_PROJECT_ROOT or global data dir. "
-                        "Optional session_id for reroute stats; optional user_id for multi-user."
+                        "and return SKILL.md context (full body or RAG chunks per CONTEXT_MODE). "
+                        "Returns up to 7 skills. "
+                        "Pass project_root for per-repo SQLite in .skillforge/ and learning. "
+                        "Optional include_project_rag merges top chunks from `skillforge index` into context. "
+                        "On success, _meta includes schema_version ("
+                        f"{MCP_RESPONSE_SCHEMA_VERSION}), sources[] (kind skill or file), "
+                        "budget (chars_skill_bodies, chars_project_chunks), fusion (MMR when combined index+RAG), "
+                        "candidates_preview, context_items_count."
                     ),
                     "inputSchema": {
                         "type": "object",
@@ -196,6 +211,14 @@ class MCPServer:
                             "project_root": {
                                 "type": "string",
                                 "description": "Repo/workspace root — stores orchestrator state in .skillforge/",
+                            },
+                            "include_project_rag": {
+                                "type": "boolean",
+                                "description": (
+                                    "If true, append top chunks from the project index in the same DB "
+                                    "(see skillforge index). Requires project_root."
+                                ),
+                                "default": False,
                             },
                             "conversation": {
                                 "type": "array",
@@ -317,6 +340,11 @@ class MCPServer:
                             "session_id": {"type": "string"},
                             "user_id": {"type": "string"},
                             "merge": {"type": "boolean", "default": True},
+                            "include_project_rag": {
+                                "type": "boolean",
+                                "description": "Same as route_skills: merge indexed project file chunks into context.",
+                                "default": False,
+                            },
                         },
                         "required": ["prompt", "project_root"],
                     },
@@ -349,8 +377,25 @@ class MCPServer:
         conversation = args.get("conversation", [])
         session_id = args.get("session_id") or None
         user_id = self._mcp_user_id(args)
+        pr = self._project_root_from_args(args)
+        db_path = resolve_orchestrator_db(pr)
+
         if not prompt.strip():
-            return {"content": [{"type": "text", "text": "No prompt provided."}]}
+            err_text = "No prompt provided."
+            return {
+                "content": [{"type": "text", "text": err_text}],
+                "isError": True,
+                "_meta": build_route_skills_meta(
+                    result={"candidates": []},
+                    picked_names=[],
+                    user_id=user_id,
+                    db_path=db_path,
+                    skills_map=self.skills or {},
+                    response_text=err_text,
+                    error="empty_prompt",
+                ),
+            }
+
         con = self._get_con(args)
         result = await run_route_turn(
             con,
@@ -359,11 +404,12 @@ class MCPServer:
             conversation,
             user_id=user_id,
             session_id=session_id,
+            project_root=pr,
+            include_project_rag=self._include_project_rag_from_args(args),
         )
         picked_names = result["picked_names"]
         reasoning = result["reasoning"]
-        pr = self._project_root_from_args(args)
-        db_path = resolve_orchestrator_db(pr)
+        context_items = result.get("context_items") or []
         if pr:
             try:
                 d = Path(pr).expanduser().resolve() / ".skillforge"
@@ -375,36 +421,41 @@ class MCPServer:
                     "reasoning": reasoning,
                     "route_ms": round(result["route_ms"], 1),
                     "user_id": user_id,
+                    "schema_version": MCP_RESPONSE_SCHEMA_VERSION,
+                    "context_mode": self.router.context_mode,
+                    "context_items_count": len(context_items),
+                    "project_rag_items_count": (result.get("event") or {}).get("project_rag_items_count", 0),
                 }
                 (d / "last_route.json").write_text(json.dumps(snap, indent=2), encoding="utf-8")
             except OSError:
                 pass
 
-        # Build response: a header explaining what was loaded, then the skill bodies
+        db_disp = redact_display_path(db_path) if redaction_enabled() else str(db_path)
         blocks = [
-            f"# Skillforge — routed {len(picked_names)} skill(s)",
-            f"_DB:_ `{db_path}`",
+            f"# Skillforge — routed {len(picked_names)} skill(s); context=`{self.router.context_mode}`",
+            f"_DB:_ `{db_disp}`",
             f"_Reasoning: {reasoning}_" if reasoning else "",
             "",
         ]
-        for n in picked_names:
-            s = self.skills.get(n)
-            if s:
-                blocks.append(f"---\n## Skill: {s.name}\n\n{s.body}\n")
-        if not picked_names:
+        if context_items:
+            blocks.append(format_context_items_markdown(context_items))
+        elif not picked_names:
             blocks.append("_No skills matched this prompt closely enough to load._")
+        response_text = "\n".join(b for b in blocks if b is not None)
+        meta = build_route_skills_meta(
+            result=result,
+            picked_names=picked_names,
+            user_id=user_id,
+            db_path=db_path,
+            skills_map=self.skills,
+            response_text=response_text,
+            context_items=context_items,
+            fusion=(result.get("event") or {}).get("context_fusion"),
+            context_redaction=(result.get("event") or {}).get("context_redaction"),
+        )
         return {
-            "content": [{"type": "text", "text": "\n".join(b for b in blocks if b is not None)}],
-            "_meta": {
-                "picked": picked_names,
-                "reasoning": reasoning,
-                "session_id": result["session_id"],
-                "user_id": user_id,
-                "rerouted": result["rerouted"],
-                "change_pct": round(result["change"] * 100, 1),
-                "route_ms": round(result["route_ms"], 1),
-                "orchestrator_db": str(db_path),
-            },
+            "content": [{"type": "text", "text": response_text}],
+            "_meta": meta,
         }
 
     def _tool_list_skills(self, args):
@@ -514,6 +565,7 @@ class MCPServer:
                 "conversation": conversation,
                 "session_id": session_id,
                 "user_id": user_id,
+                "include_project_rag": self._include_project_rag_from_args(args),
             }
         )
         if route.get("isError"):

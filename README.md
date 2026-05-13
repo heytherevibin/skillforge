@@ -10,7 +10,7 @@
 
 **Primary interface:** **stdio MCP** (`skillforge mcp`) — add it to Claude Desktop, Cursor, or Claude Code.
 
-**Optional:** **headless HTTP API** (`skillforge start`) for `/chat`, `/events`, and integrations. **Real-time usage:** run **`skillforge events --watch`** in a terminal (top skills, active sessions, and live **route** / **feedback** lines from SQLite).
+**Observability:** run **`skillforge events --watch`** in a terminal (top skills, active sessions, and live **route** / **feedback** lines from SQLite).
 
 ---
 
@@ -23,11 +23,10 @@
 - [Usage](#usage)
   - [Run modes](#run-modes)
   - [Model Context Protocol (MCP)](#model-context-protocol-mcp)
-  - [Multi-user authentication](#multi-user-authentication)
+    - [MCP response contract](#mcp-response-contract)
 - [Skills and packs](#skills-and-packs)
 - [Routing pipeline](#routing-pipeline)
 - [Configuration](#configuration)
-- [HTTP API](#http-api)
 - [Local data and operations](#local-data-and-operations)
 - [Security considerations](#security-considerations)
 - [Contributing and governance](#contributing-and-governance)
@@ -47,7 +46,7 @@
 | **Observability** | **`skillforge events`**: snapshots of **usage** + **active sessions**, **`--watch`** for realtime; **`--verbose`** for route detail. No browser UI. |
 | **Project bootstrap** | MCP tools **`materialize_project`** and **`skillforge_bootstrap`** write `.cursor/rules`, **`docs/SKILLFORGE-PRD.md`**, and a **`CLAUDE.md`** section (map **`/skillforge`** in rules to MCP tools). |
 | **Extensibility** | Custom skills, git-based **packs**, and overrides under a single user config directory. |
-| **Deployment flexibility** | **MCP stdio** (default story), optional **HTTP API**, dev **`skillforge chat`** harness. |
+| **Deployment flexibility** | **MCP stdio** as the default integration; **CLI** helpers (`route`, `events`, `index`). |
 
 Bundled content includes **200+** curated skills (coding, security, research, frontend/backend patterns, and more). Exact counts are validated in CI.
 
@@ -58,8 +57,8 @@ Bundled content includes **200+** curated skills (coding, security, research, fr
 | Dependency | Version | Notes |
 |------------|---------|--------|
 | **Node.js** | **>= 18** | Required for the CLI bootstrapper. Continuous integration runs on **Node 22**. |
-| **Python** | **>= 3.10** | Used on the host PATH for embeddings and the FastAPI orchestrator. |
-| **Anthropic API** | — | **`ANTHROPIC_API_KEY`** is required for **HTTP**, **CLI chat**, and the **full** (Haiku) router. **MCP** can run **without** it when using **embedding-only** routing (default when the key is omitted; see [MCP](#model-context-protocol-mcp)). |
+| **Python** | **>= 3.10** | Used on the host PATH for embeddings and routing (via the CLI-spawned **venv**). |
+| **Anthropic API** | — | **`ANTHROPIC_API_KEY`** enables the **full** (Haiku) router when you want it. **MCP** can run **without** it using **embedding-only** routing (default when the key is omitted; see [MCP](#model-context-protocol-mcp)). |
 
 **First run:** The CLI creates **`~/.skillforge/`**, a dedicated **Python venv**, installs Python dependencies, and caches the default embedding model (typically on the order of one to two minutes once; subsequent starts are fast).
 
@@ -72,12 +71,6 @@ npx --yes @heytherevibin/skillforge --help
 ```
 
 Add Skillforge to your MCP config (see [MCP](#model-context-protocol-mcp)). No `ANTHROPIC_API_KEY` is required for **embedding-only** routing.
-
-Optional HTTP API (e.g. for `skillforge chat`): set **`ANTHROPIC_API_KEY`**, then:
-
-```bash
-skillforge start
-```
 
 Live log (usage + routes): **`skillforge events --watch`**.
 
@@ -111,11 +104,9 @@ Source and issues: [github.com/heytherevibin/skillforge](https://github.com/heyt
 |---------|---------|
 | `skillforge --help` | Recommended first step; **MCP** is the main integration. |
 | `skillforge mcp` | **stdio** MCP server (Claude, Cursor, …). |
-| `skillforge start [--port=8000]` | Optional **HTTP API** (no HTML or WebSocket UI). |
 | `skillforge events [--watch]` | **Terminal** log: usage snapshot + routes; see **`skillforge events --help`**. |
 | `skillforge route […]` | **Terminal** routing — same pipeline as MCP **`route_skills`** (loads embed model); see **`skillforge route --help`**. |
 | `skillforge mcp config [--local] [--with-anthropic]` | **stdout**: JSON snippet for **`mcp.json`** (merge manually). |
-| `skillforge chat` | Dev harness: HTTP client to **`POST /chat`** (needs **`start`** + API key). |
 
 ### Model Context Protocol (MCP)
 
@@ -163,29 +154,31 @@ With **Haiku** routing (uses your Anthropic key in the MCP process):
 
 | Tool | Purpose |
 |------|---------|
-| `route_skills` | Returns routed **`SKILL.md`** bodies. Pass **`project_root`** (workspace path) for per-repo SQLite under **`.skillforge/orchestrator.db`** and learning; or set env **`SKILLFORGE_PROJECT_ROOT`**. Optional **`session_id`**, **`user_id`** / **`SKILLFORGE_MCP_USER_ID`**. |
+| `route_skills` | Returns routed **`SKILL.md`** context (chunks or full body). Pass **`project_root`** for per-repo SQLite under **`.skillforge/orchestrator.db`**. Optional **`include_project_rag`** (after **`skillforge index --project-root=…`**), **`session_id`**, **`user_id`** / **`SKILLFORGE_MCP_USER_ID`**, or env **`SKILLFORGE_PROJECT_ROOT`**. |
 | `list_skills` | Catalog overview; optional **`user_id`** scopes usage stats. |
-| `skill_feedback` | Feedback for the learning loop; optional **`user_id`**, **`session_id`** (for `/events`). |
+| `skill_feedback` | Feedback for the learning loop; optional **`user_id`**, **`session_id`** (stored with events). |
 | `skill_referenced` | Mark a routed skill as **used** in the reply (increments **`referenced`** + weight; optional **`user_id`**). |
 | `disable_skill` | Toggle skills; optional **`user_id`**. |
 | `materialize_project` | Writes **`.cursor/rules/skillforge.mdc`**, **`docs/SKILLFORGE-PRD.md`**, updates **`CLAUDE.md`** (Skillforge block). Args: **`project_root`**, **`skill_names`** from **`route_skills`**. |
 | `skillforge_bootstrap` | **`route_skills`** + **`materialize_project`** in one call (needs **`project_root`**). |
 
+### MCP response contract
+
+Structured diagnostics for tool **`route_skills`** live in **`result._meta`** (hosts may ignore or log them):
+
+- **`schema_version`**: **`1.4`** — same as **1.3** plus optional **`context_redaction`** (`enabled`, `secret_hits`, `path_hits`) on **`route_skills`** success.
+- **`sources`**: citations; each item has **`kind`** (`skill` or **`file`**), **`ref`**, **`line_start`** / **`line_end`**, **`score`**, optional **`mmr_rank`** after fusion.
+- **`fusion`**: present when MMR fusion ran (**`enabled`: true**): **`lambda`**, **`budget_chars`**, **`pool_skill`**, **`pool_project`**, **`mmr_trace`**, …
+- **`context_redaction`**: optional; when scrubbing is enabled, reports **`enabled`**, **`secret_hits`**, **`path_hits`** for exported context.
+- **`budget`**: **`chars_skill_bodies`**, **`chars_project_chunks`**, **`chars_context_items_total`**, **`chars_response_total`**, **`est_tokens_approx`** (rough `chars/4`).
+- **`candidates_preview`**: up to 15 shortlist entries **`{ name, score }`** for debugging.
+- **`picked`**, **`reasoning`**, **`session_id`**, **`user_id`**, **`rerouted`**, **`change_pct`**, **`route_ms`**, **`orchestrator_db`**.
+
+On validation errors (e.g. empty **`prompt`**), the tool returns **`isError`: true** and **`_meta.error`** (e.g. **`empty_prompt`**), still with **`schema_version`** and **`sources`: `[]`**.
+
 `/skillforge` is not registered by npm installs; add a **Cursor rule** or **CLAUDE.md** instruction so the agent calls these tools when the user asks.
 
-Route events go to **`~/.skillforge/data/orchestrator.db`**; use **`skillforge events`** or **`GET /events`** when HTTP is running.
-
-### Multi-user authentication
-
-Bearer tokens isolate sessions, weights, and events when enabled:
-
-```bash
-skillforge auth add <user-id>
-skillforge auth list
-skillforge auth remove <user-id>
-```
-
-When any token exists, protected **HTTP API** routes require **`Authorization: Bearer <token>`**. Single-user mode applies when no tokens are configured.
+Route events go to **`~/.skillforge/data/orchestrator.db`** (or per-repo **`.skillforge/orchestrator.db`** when **`project_root`** is set); use **`skillforge events`** to inspect them.
 
 ---
 
@@ -233,7 +226,7 @@ User prompt
     → Usage signals update weights (optional)
 ```
 
-Re-route: when overlap between successive active sets falls below a configurable threshold, the pipeline selects a new set for the next turn. Events are stored in SQLite; stream them with **`skillforge events --watch`** (or **`GET /events`** when HTTP is running).
+Re-route: when overlap between successive active sets falls below a configurable threshold, the pipeline selects a new set for the next turn. Events are stored in SQLite; stream them with **`skillforge events --watch`**.
 
 ---
 
@@ -243,36 +236,34 @@ Environment variables (see also inline help and server defaults):
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `ANTHROPIC_API_KEY` | — | **Required** for HTTP/CLI chat and answer streaming; **optional** for MCP if you use embedding-only routing (default when unset). |
-| `SKILLFORGE_ROUTER_MODE` | *(auto)* | `full` = always use Haiku for final pick (MCP: requires key for routing). `embedding` = skip Haiku; top `SKILLFORGE_MAX_ACTIVE` from shortlist. Unset = **auto**: MCP uses embedding-only when `ANTHROPIC_API_KEY` is absent, else full. HTTP: unset or `full` uses Haiku when key is present; set `embedding` to skip Haiku on the server (answer model still needs a key). |
-| `SKILLFORGE_PORT` | `8000` | HTTP listen port. |
+| `ANTHROPIC_API_KEY` | — | **Optional** for MCP: omit for embedding-only routing (default when unset); set for **full** (Haiku) routing. |
+| `SKILLFORGE_ROUTER_MODE` | *(auto)* | `full` = always use Haiku for final pick (requires key). `embedding` = skip Haiku; top `SKILLFORGE_MAX_ACTIVE` from shortlist. Unset = **auto**: embedding-only when `ANTHROPIC_API_KEY` is absent, else full. |
 | `SKILLFORGE_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model id. |
-| `SKILLFORGE_ROUTER_MODEL` | `claude-haiku-4-5-20251001` | Routing model. |
-| `SKILLFORGE_ANSWER_MODEL` | `claude-opus-4-7` | Main response model. |
+| `SKILLFORGE_ROUTER_MODEL` | `claude-haiku-4-5-20251001` | Routing model (Haiku). |
 | `SKILLFORGE_TOP_K` | `15` | Embedding shortlist size. |
 | `SKILLFORGE_MAX_ACTIVE` | `7` | Maximum skills injected per turn. |
 | `SKILLFORGE_REROUTE_THRESHOLD` | `0.4` | Re-route sensitivity (Jaccard distance). |
-| `SKILLFORGE_MCP_USER_ID` | `""` | Default logical **user id** for MCP tool calls when arguments omit `user_id` (weights, sessions, events—same SQLite namespace as HTTP `resolve_user`). |
+| `SKILLFORGE_CONTEXT_MODE` | `chunks` | `chunks` = embed **line-bounded chunks** from each picked skill body (RAG) up to **`SKILLFORGE_ROUTE_MAX_CHARS`**. `full_body` = inject entire **SKILL.md** per pick (legacy). |
+| `SKILLFORGE_CHUNK_MAX_CHARS` | `1200` | Max characters per chunk (before overlap split). |
+| `SKILLFORGE_CHUNK_OVERLAP` | `200` | Character overlap when hard-splitting an oversized section. |
+| `SKILLFORGE_ROUTE_MAX_CHARS` | `60000` | Skill chunk char cap when **`SKILLFORGE_CONTEXT_FUSION`** is off (append path); also part of default unified budget sum when fusion is on. |
+| `SKILLFORGE_PROJECT_RAG_MAX_CHARS` | `24000` | Project chunk char cap when fusion is off (append path); part of default unified budget when fusion is on. |
+| `SKILLFORGE_CONTEXT_BUDGET_CHARS` | *(route + project RAG defaults)* | Single cap for **MMR-fused** skill + project context. |
+| `SKILLFORGE_CONTEXT_FUSION` | `1` | **`0`** / **`false`**: disable MMR fusion; append project chunks after skills. |
+| `SKILLFORGE_CONTEXT_MMR_LAMBDA` | `0.7` | MMR tradeoff: higher ⇒ query relevance; lower ⇒ diversity vs. already-selected chunks. |
+| `SKILLFORGE_FUSION_POOL_SKILL` | `96` | Max skill chunks in the fusion candidate pool. |
+| `SKILLFORGE_FUSION_POOL_PROJECT` | `96` | Max project chunks in the fusion candidate pool. |
+| `SKILLFORGE_FUSION_FULL_BODY_PREVIEW_CHARS` | `4000` | **`SKILL.md`** prefix length for embedding full-body / fallback fusion rows. |
+| `SKILLFORGE_PROJECT_RAG_MAX_CHUNKS` | `20000` | Max **project_chunks** rows loaded for one retrieval. |
+| `SKILLFORGE_INDEX_MAX_FILE_BYTES` | `524288` | Skip indexing files larger than this (bytes). |
+| `SKILLFORGE_INDEX_IGNORE_DIRS` | `""` | Extra comma-separated directory **basename** ignores (e.g. `out,tmp`). |
+| `SKILLFORGE_REDACT_CONTEXT` | `1` | When **`1`** (default), scrub common secret shapes and (with home path scrub) exported context before MCP/CLI output and route events. |
+| `SKILLFORGE_REDACT_HOME_IN_PATHS` | `1` | Replace resolved home-directory prefixes in chunk paths / DB path hints with **`[HOME]`**. |
+| `SKILLFORGE_MCP_USER_ID` | `""` | Default logical **user id** for MCP tool calls when arguments omit `user_id` (weights, sessions, events). |
 | `SKILLFORGE_PROJECT_ROOT` | `""` | Default workspace root when MCP **`project_root`** is omitted: events/weights/sessions live in **`<root>/.skillforge/orchestrator.db`**. Prefer passing **`project_root`** on each tool call from the host. |
 | `SKILLFORGE_SKILL_HOT_RELOAD` | `1` | When **`0`** / **`false`**, disable **SKILL.md** hot-reload; restart the MCP process to refresh the catalog. |
 | `SKILLFORGE_WATCH_SKILLS_INTERVAL` | `30` | Seconds between background catalog checks when hot reload is on. **`0`**: no background polling and no MCP **`tools.listChanged`**; **`tools/list`** and **`tools/call`** still reload when files change. |
 | `SKILLFORGE_MCP_LIST_CHANGED` | `1` | When **`0`** / **`false`**, never emit **`notifications/tools/list_changed`** (and **`listChanged`** is not advertised), even if a background interval is set. |
-
----
-
-## HTTP API
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/chat` | Primary chat; SSE stream. |
-| `POST` | `/feedback` | Skill feedback for learning. |
-| `POST` | `/skills/disable` | Enable/disable a skill flag. |
-| `GET` | `/skills` | Catalog with stats and weights. |
-| `GET` | `/events` | Recent routing events (`?limit=`). |
-| `GET` | `/` | JSON service hint (use **`skillforge events --watch`** for a live terminal log). |
-| `GET` | `/healthz` | Health metadata (`skills_loaded`, **`live_log`** hint). |
-
-Authenticated mode applies **`Bearer`** tokens as described above. Do not expose unauthenticated instances beyond trusted networks.
 
 ---
 
@@ -282,7 +273,7 @@ Optional **per-project** state (when **`project_root`** or **`SKILLFORGE_PROJECT
 
 ```
 <workspace>/.skillforge/
-├── orchestrator.db   # SQLite for this repo (sessions, weights, events)
+├── orchestrator.db   # SQLite: sessions, weights, events, **project_chunks** (after `skillforge index`)
 └── last_route.json   # Last route_skills snapshot (after a routed call)
 ```
 
@@ -295,12 +286,12 @@ Global default when no project root:
 ├── skills/               # User-added skills
 ├── packs/<hash>/         # Cloned pack repositories
 ├── packs.json            # Pack registry
-└── auth.json             # Tokens (POSIX mode 0600 when used)
 ```
 
 | Command | Effect |
 |---------|--------|
 | `skillforge events` | Prints a **usage** snapshot and recent **`route`** / **`feedback`** rows; **`--watch`**, **`--project-root`** (per-repo DB), **`--user`**, **`--verbose`** (see **`--help`**). |
+| `skillforge index` | Chunk/embed text files under **`--project-root`** into **`project_chunks`**. **`--reset`**, **`--stats-only`**, **`--quiet`** (see **`--help`**). |
 | `skillforge reset` | Clears learning state and event history in the database. |
 | `skillforge install` | Re-runs bootstrap (venv and dependencies). |
 | `rm -rf ~/.skillforge` | Full removal of local state and venv. |
@@ -309,8 +300,8 @@ Global default when no project root:
 
 ## Security considerations
 
-- Treat **`ANTHROPIC_API_KEY`** and bearer tokens as **secrets**. Prefer environment injection or secret stores, not committed files.
-- For **internet-facing** deployments, use **TLS**, **reverse proxies**, and **mandatory** bearer authentication; assume an open HTTP port is reachable by untrusted clients.
+- **Redaction is best-effort regex scrubbing**, not a guarantee. Do not paste production secrets into prompts; treat routed context like **untrusted text** until reviewed.
+- Treat **`ANTHROPIC_API_KEY`** as a **secret** when you set it (e.g. for Haiku routing in MCP). Prefer environment injection or secret stores, not committed files.
 - Vulnerability disclosure: see **[SECURITY.md](SECURITY.md)**.
 
 ---

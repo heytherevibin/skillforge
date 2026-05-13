@@ -1,7 +1,7 @@
 {
   "name": "@heytherevibin/skillforge",
-  "version": "0.2.1",
-  "description": "Skill orchestration for Claude: hybrid embedding and router-based routing, MCP and HTTP servers, per-user learning, and a large bundled SKILL.md catalog.",
+  "version": "0.7.0",
+  "description": "Skill orchestration for Claude: hybrid embedding and router-based routing, MCP stdio server, per-user learning, and a large bundled SKILL.md catalog.",
   "keywords": [
     "claude",
     "skills",

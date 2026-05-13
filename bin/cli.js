@@ -5,17 +5,15 @@
  * Usage:
  *   skillforge, skillforge --help   Show help (primary path: MCP, not a web app)
  *   skillforge mcp                   MCP stdio server (Claude / Cursor / …)
- *   skillforge start [--port=8000]   Optional headless HTTP API (no browser UI)
  *   skillforge events [--watch] [--limit=N]     Print SQLite routing events
  *   skillforge route [words…] [--prompt=…]     Same routing as MCP route_skills (terminal)
- *   skillforge chat                  Dev harness (needs `start` + ANTHROPIC_API_KEY)
+ *   skillforge index --project-root=…            Chunk/embed repo files for project RAG
  *   skillforge install               One-time Python venv + deps
- *   skillforge skills … / pack … / auth … / reset
+ *   skillforge skills … / pack … / reset
  */
 
 const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 const os = require('os');
 const packs = require('../lib/packs');
@@ -26,8 +24,8 @@ const CONFIG_DIR = path.join(os.homedir(), '.skillforge');
 const VENV_DIR = path.join(CONFIG_DIR, 'venv');
 const DATA_DIR = path.join(CONFIG_DIR, 'data');
 const USER_SKILLS_DIR = path.join(CONFIG_DIR, 'skills');
-const PACKS_DIR = path.join(CONFIG_DIR, 'packs');
-const AUTH_FILE = path.join(CONFIG_DIR, 'auth.json');
+/** Bearer-token file for the removed HTTP API (<=0.6.x); deleted on first CLI use. */
+const LEGACY_AUTH_FILE = path.join(CONFIG_DIR, 'auth.json');
 const SETUP_MARKER = path.join(CONFIG_DIR, '.setup-complete');
 
 const args = process.argv.slice(2);
@@ -84,6 +82,18 @@ function findSystemPython() {
 function ensureDirs() {
   for (const d of [CONFIG_DIR, DATA_DIR, USER_SKILLS_DIR]) {
     fs.mkdirSync(d, { recursive: true });
+  }
+}
+
+/** v0.7.0 removed HTTP + `skillforge auth`; leftover tokens file is misleading — remove once. */
+function dropLegacyAuthJsonIfPresent() {
+  try {
+    if (fs.existsSync(LEGACY_AUTH_FILE)) {
+      fs.rmSync(LEGACY_AUTH_FILE);
+      info('Removed legacy ~/.skillforge/auth.json (HTTP API was removed in v0.7).');
+    }
+  } catch (e) {
+    err(`Could not remove legacy auth.json: ${e.message}`);
   }
 }
 
@@ -145,77 +155,7 @@ function setupIfNeeded() {
   }
 }
 
-// ---- API key check ----
-function checkApiKey() {
-  if (!process.env.ANTHROPIC_API_KEY) {
-    err('ANTHROPIC_API_KEY environment variable is not set.');
-    log(c.dim('  Get a key at https://console.anthropic.com/'));
-    log(c.dim('  Then set it:'));
-    log(c.dim('    export ANTHROPIC_API_KEY=sk-ant-...'));
-    process.exit(1);
-  }
-}
-
-// ---- auth management ----
-function loadAuth() {
-  if (!fs.existsSync(AUTH_FILE)) return {};
-  try { return JSON.parse(fs.readFileSync(AUTH_FILE, 'utf8')); } catch { return {}; }
-}
-function saveAuth(map) {
-  ensureDirs();
-  fs.writeFileSync(AUTH_FILE, JSON.stringify(map, null, 2), { mode: 0o600 });
-}
-function authToEnvVar(map) {
-  // map is { token: userId }. Convert and inject as JSON env var.
-  return JSON.stringify(map);
-}
-
-function authAdd(user) {
-  if (!user) { err('Usage: skillforge auth add <user-id>'); process.exit(1); }
-  const map = loadAuth();
-  // Generate a token
-  const token = 'sf_' + crypto.randomBytes(24).toString('base64url');
-  map[token] = user;
-  saveAuth(map);
-  ok(`Created token for user "${user}":`);
-  log('');
-  log('   ' + c.bold(token));
-  log('');
-  log(c.dim('Use this token in the Authorization header:'));
-  log(c.dim(`   Authorization: Bearer ${token}`));
-  log(c.dim('Restart the server for the token to take effect.'));
-}
-
-function authList() {
-  const map = loadAuth();
-  const tokens = Object.entries(map);
-  if (tokens.length === 0) {
-    info('No auth tokens. Server runs in single-user mode.');
-    log(c.dim('  Add one with: skillforge auth add <user-id>'));
-    return;
-  }
-  log(c.bold('Auth tokens:'));
-  for (const [token, user] of tokens) {
-    log(`  ${c.dim(token.slice(0, 16) + '...')} → ${user}`);
-  }
-}
-
-function authRemove(user) {
-  if (!user) { err('Usage: skillforge auth remove <user-id>'); process.exit(1); }
-  const map = loadAuth();
-  const before = Object.keys(map).length;
-  for (const [t, u] of Object.entries(map)) {
-    if (u === user) delete map[t];
-  }
-  const removed = before - Object.keys(map).length;
-  saveAuth(map);
-  if (removed > 0) ok(`Revoked ${removed} token(s) for "${user}"`);
-  else info(`No tokens for "${user}"`);
-}
-
-// ---- server lifecycle ----
 function buildEnv(extra = {}) {
-  const authMap = loadAuth();
   return {
     ...process.env,
     SKILLFORGE_BUNDLED_SKILLS: path.join(PKG_ROOT, 'skills'),
@@ -223,34 +163,8 @@ function buildEnv(extra = {}) {
     SKILLFORGE_DB_PATH: path.join(DATA_DIR, 'orchestrator.db'),
     PYTHONPATH: path.join(PKG_ROOT, 'python'),
     PYTHONUNBUFFERED: '1',
-    ...(Object.keys(authMap).length > 0 ? { SKILLFORGE_AUTH_TOKENS: authToEnvVar(authMap) } : {}),
     ...extra,
   };
-}
-
-function startServer({ port = 8000 } = {}) {
-  setupIfNeeded();
-  checkApiKey();
-
-  const env = buildEnv({ SKILLFORGE_PORT: String(port) });
-  const authEnabled = Object.keys(loadAuth()).length > 0;
-
-  info(`Starting HTTP API on http://localhost:${port}`);
-  log(c.dim('  Live log:     skillforge events --watch'));
-  log(c.dim(`  Skills dir: ${USER_SKILLS_DIR} (drop folders here to add)`));
-  log(c.dim(`  Data dir:   ${DATA_DIR}`));
-  log(c.dim(`  Auth:       ${authEnabled ? 'enabled (bearer token required)' : 'disabled (single-user)'}`));
-  log('');
-
-  const proc = spawn(
-    venvPython(),
-    ['-m', 'uvicorn', 'app.main:app', '--host', '0.0.0.0', '--port', String(port)],
-    { stdio: 'inherit', env }
-  );
-
-  proc.on('exit', (code) => process.exit(code || 0));
-  process.on('SIGINT', () => proc.kill('SIGINT'));
-  process.on('SIGTERM', () => proc.kill('SIGTERM'));
 }
 
 function printMcpConfig() {
@@ -313,12 +227,14 @@ function runRouteCmd() {
   proc.on('exit', (code) => process.exit(code ?? 0));
 }
 
-function runChat() {
+function runIndexCmd() {
   setupIfNeeded();
-  checkApiKey();
-  const env = buildEnv();
-  const proc = spawn(venvPython(), ['-m', 'app.cli'], { stdio: 'inherit', env });
-  proc.on('exit', (code) => process.exit(code || 0));
+  const sub = args.slice(1);
+  const proc = spawn(venvPython(), ['-m', 'app.index_cli', ...sub], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
 }
 
 // ---- skill management ----
@@ -341,7 +257,7 @@ function skillsAdd(srcPath) {
   const dest = path.join(USER_SKILLS_DIR, name);
   fs.cpSync(src, dest, { recursive: true });
   ok(`Added skill "${name}" → ${dest}`);
-  log(c.dim('  Restart the server to pick up the new skill.'));
+  log(c.dim('  Restart skillforge mcp (or trigger catalog reload) to pick up the new skill.'));
 }
 
 function skillsList() {
@@ -373,7 +289,7 @@ function skillsRemove(name) {
   }
   const target = path.join(USER_SKILLS_DIR, name);
   if (!fs.existsSync(target)) {
-    err(`No user skill named "${name}". Bundled skills cannot be removed (use disable_skill via MCP or HTTP API).`);
+    err(`No user skill named "${name}". Bundled skills cannot be removed (use disable_skill via MCP).`);
     process.exit(1);
   }
   fs.rmSync(target, { recursive: true, force: true });
@@ -398,10 +314,9 @@ ${c.bold('Run modes:')}
   skillforge --help                This message (recommended first step)
   skillforge mcp                   MCP stdio — primary integration for Claude / Cursor
   skillforge mcp config [--local] [--with-anthropic]   Print JSON for MCP host (merge into mcp.json)
-  skillforge start [--port=8000]   Optional HTTP API (no web dashboard)
   skillforge events [--watch] [--limit=N] [--verbose] [--user=…]   Live routing log + usage (see --help)
-  skillforge route [words…] [--project-root=…] [--session-id=…]   Route a prompt (see skillforge route --help)
-  skillforge chat                  Dev harness (needs start + ANTHROPIC_API_KEY)
+  skillforge route [words…] [--project-root=…] [--include-project-rag]   Route a prompt (see skillforge route --help)
+  skillforge index --project-root=… [--reset] [--stats-only]   Index repo text for include_project_rag
 
 ${c.bold('Skills:')}
   skillforge skills list           List bundled and user skills
@@ -413,11 +328,6 @@ ${c.bold('Skill packs (install from git):')}
   skillforge pack list             List installed packs
   skillforge pack update <name>    Update a pack
   skillforge pack remove <name>    Uninstall a pack
-
-${c.bold('Auth (multi-user mode):')}
-  skillforge auth add <user>       Create a bearer token for a user
-  skillforge auth list             List users with tokens
-  skillforge auth remove <user>    Revoke all tokens for a user
 
 ${c.bold('Maintenance:')}
   skillforge reset                 Wipe learned state and event log
@@ -436,20 +346,16 @@ ${c.bold('MCP integration:')}
 
 // ---- main ----
 async function main() {
+  dropLegacyAuthJsonIfPresent();
+
   if (args.includes('--help') || args.includes('-h') || cmd === 'help') {
     showHelp();
     return;
   }
 
-  const portArg = args.find((a) => a.startsWith('--port='));
-  const port = portArg ? parseInt(portArg.split('=')[1], 10) : 8000;
-
   switch (cmd) {
     case undefined:
       showHelp();
-      break;
-    case 'start':
-      startServer({ port });
       break;
     case 'events':
       runEventsCmd();
@@ -457,8 +363,8 @@ async function main() {
     case 'route':
       runRouteCmd();
       break;
-    case 'chat':
-      runChat();
+    case 'index':
+      runIndexCmd();
       break;
     case 'mcp':
       if (args[1] === 'config') {
@@ -492,7 +398,7 @@ async function main() {
           const result = packs.installPack(args[2]);
           ok(`Installed pack "${result.name}" (${result.version}) with ${result.skills.length} skill(s):`);
           result.skills.forEach(s => log('  ' + c.dim('•'), s));
-          log(c.dim('  Restart the server to pick up new skills.'));
+          log(c.dim('  Restart skillforge mcp (or trigger catalog reload) to pick up new skills.'));
         } else if (sub === 'list') {
           const list = packs.listPacks();
           if (list.length === 0) {
@@ -518,18 +424,6 @@ async function main() {
         }
       } catch (e) {
         err(e.message);
-        process.exit(1);
-      }
-      break;
-    }
-    case 'auth': {
-      const sub = args[1];
-      if (sub === 'add') authAdd(args[2]);
-      else if (sub === 'list') authList();
-      else if (sub === 'remove' || sub === 'rm') authRemove(args[2]);
-      else {
-        err(`Unknown auth subcommand: ${sub}`);
-        log(c.dim('  Try: add, list, remove'));
         process.exit(1);
       }
       break;

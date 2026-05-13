@@ -9,7 +9,14 @@ import time
 from pathlib import Path
 
 from app.db_paths import resolve_orchestrator_db
-from app.main import build_router_and_skills, init_db, run_route_turn
+from app.main import (
+    build_router_and_skills,
+    format_context_items_markdown,
+    init_db,
+    run_route_turn,
+)
+from app.mcp_contract import MCP_RESPONSE_SCHEMA_VERSION, build_route_skills_meta
+from app.redaction import redaction_enabled, redact_display_path
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -28,6 +35,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--session-id", default="", help="Stable session id (reuse across turns for reroute stats).")
     p.add_argument("--user-id", default="", help="Logical user id for weights/sessions/events.")
     p.add_argument("--json-meta", action="store_true", help="Print routing metadata as JSON on stderr after output.")
+    p.add_argument(
+        "--include-project-rag",
+        action="store_true",
+        help="Append chunks from `skillforge index` (same DB as --project-root). Requires --project-root.",
+    )
     return p.parse_args(argv)
 
 
@@ -38,6 +50,9 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
 
     pr = (args.project_root or "").strip() or None
+    if args.include_project_rag and not pr:
+        print("skillforge route: --include-project-rag requires --project-root.", file=sys.stderr)
+        return 2
     db_path = resolve_orchestrator_db(pr)
     con = init_db(db_path)
 
@@ -53,6 +68,8 @@ async def _run(args: argparse.Namespace) -> int:
             conversation=[],
             user_id=user_id,
             session_id=session_id,
+            project_root=pr,
+            include_project_rag=bool(args.include_project_rag),
         )
     finally:
         con.close()
@@ -60,6 +77,7 @@ async def _run(args: argparse.Namespace) -> int:
     picked_names = result["picked_names"]
     reasoning = result["reasoning"]
     sid = result["session_id"]
+    context_items = result.get("context_items") or []
 
     if pr:
         try:
@@ -73,36 +91,41 @@ async def _run(args: argparse.Namespace) -> int:
                 "route_ms": round(result["route_ms"], 1),
                 "user_id": user_id,
                 "source": "cli_route",
+                "schema_version": MCP_RESPONSE_SCHEMA_VERSION,
+                "context_mode": router.context_mode,
+                "context_items_count": len(context_items),
+                "project_rag_items_count": (result.get("event") or {}).get("project_rag_items_count", 0),
             }
             (d / "last_route.json").write_text(json.dumps(snap, indent=2), encoding="utf-8")
         except OSError:
             pass
 
+    db_disp = redact_display_path(db_path) if redaction_enabled() else str(db_path)
     blocks = [
-        f"# Skillforge — routed {len(picked_names)} skill(s)",
-        f"_DB:_ `{db_path}`",
+        f"# Skillforge — routed {len(picked_names)} skill(s); context=`{router.context_mode}`",
+        f"_DB:_ `{db_disp}`",
         f"_Reasoning: {reasoning}_" if reasoning else "",
         "",
     ]
-    for n in picked_names:
-        s = skills.get(n)
-        if s:
-            blocks.append(f"---\n## Skill: {s.name}\n\n{s.body}\n")
-    if not picked_names:
+    if context_items:
+        blocks.append(format_context_items_markdown(context_items))
+    elif not picked_names:
         blocks.append("_No skills matched this prompt closely enough to load._")
-    print("\n".join(b for b in blocks if b is not None))
+    response_text = "\n".join(b for b in blocks if b is not None)
+    print(response_text)
 
     if args.json_meta:
-        meta = {
-            "picked": picked_names,
-            "reasoning": reasoning,
-            "session_id": sid,
-            "user_id": user_id,
-            "rerouted": result["rerouted"],
-            "change_pct": round(result["change"] * 100, 1),
-            "route_ms": round(result["route_ms"], 1),
-            "orchestrator_db": str(db_path),
-        }
+        meta = build_route_skills_meta(
+            result=result,
+            picked_names=picked_names,
+            user_id=user_id,
+            db_path=db_path,
+            skills_map=skills,
+            response_text=response_text,
+            context_items=context_items,
+            fusion=(result.get("event") or {}).get("context_fusion"),
+            context_redaction=(result.get("event") or {}).get("context_redaction"),
+        )
         print(json.dumps(meta, indent=2), file=sys.stderr)
 
     return 0

@@ -7,8 +7,7 @@ Skillforge is an **npm-packaged skill orchestrator**: it routes tasks to a small
 ## Surfaces (today)
 
 - **MCP** (`skillforge mcp`): primary — `route_skills`, `list_skills`, feedback tools, `materialize_project`, `skillforge_bootstrap`.
-- **Terminal**: `skillforge events --watch` with optional **`--project-root`**.
-- **HTTP** (`skillforge start`): optional; still uses the global DB in **app_state** (not per-request project root unless extended later).
+- **Terminal**: `skillforge events --watch` with optional **`--project-root`**; `skillforge route`, `skillforge index`.
 
 ## Cursor reality
 
@@ -17,7 +16,6 @@ Native **`/skillforge`** in editor chat is **not** registered by this npm packag
 ## Near-term backlog
 
 - Shared **`orchestrate()`** API for MCP + CLI parity.
-- HTTP: optional **`project_root`** header or body for `/chat` if needed.
 - Tests: MCP handshake + `resolve_orchestrator_db` behavior.
 
 ## Non-goals (v1)
