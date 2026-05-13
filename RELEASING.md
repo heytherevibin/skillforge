@@ -5,9 +5,9 @@
 | Workflow | File | When it runs |
 |----------|------|----------------|
 | **CI** | [.github/workflows/ci.yml](.github/workflows/ci.yml) | Every **push** and **pull request** to `main`; also **`workflow_dispatch`** (run manually from the Actions tab) |
-| **Release** | [.github/workflows/release.yml](.github/workflows/release.yml) | When a **`v*`** tag is **pushed** to the repository (e.g. `v0.1.0`) |
+| **skillforge release** | [.github/workflows/release.yml](.github/workflows/release.yml) | When a **`v*`** tag is **pushed** to the repository (e.g. `v0.1.0`) |
 
-In the GitHub UI, open **Actions** and look for **CI** and **Release** (not the older “publish to npm” name).
+In the GitHub UI, open **Actions** and look for **CI** and **skillforge release** (not the older “publish to npm” name).
 
 ## Verify Actions without cutting a release
 
@@ -26,9 +26,9 @@ Create one at [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens) (
 2. Commit and **`git push origin main`**. Wait for **CI** to pass.
 3. Create a tag whose name is **`v` + that exact version**:  
    `git tag v0.1.0 && git push origin v0.1.0`
-4. Open **Actions → Release**. The job will **fail the version check** if `v0.1.0` does not match `package.json` `0.1.0`.
+4. Open **Actions → skillforge release**. The job will **fail the version check** if `v0.1.0` does not match `package.json` `0.1.0`.
 5. Confirm on npm: `npm view @heytherevibin/skillforge version`  
-   Confirm the **GitHub Release** includes the `.tgz` asset.
+   Confirm the **GitHub Release** exists with title **`skillforge <tag>`** (e.g. **`skillforge v0.1.0`**) and the `.tgz` asset.
 
 Scoped packages require a **public** publish; the workflow already runs `npm publish --access public`.
 
@@ -42,9 +42,9 @@ If older versions (e.g. **0.2.x**) were published and you want the public story 
 
 ## Recover if a tag exists but npm was never updated
 
-Typical causes: the tag was created before **Release** existed on `main`, the tag was only created in the GitHub UI without a matching workflow run, or **`package.json` did not match the tag**.
+Typical causes: the tag was created before **skillforge release** existed on `main`, the tag was only created in the GitHub UI without a matching workflow run, or **`package.json` did not match the tag**.
 
-**Option A — reuse the same version (re-trigger Release)**
+**Option A — reuse the same version (re-trigger skillforge release)**
 
 1. Ensure `.github/workflows/release.yml` on `main` is the current one and **`package.json` `version`** matches the tag (without `v`).
 2. Delete the tag locally and on the remote, then push it again so GitHub emits a new `push` event for that tag:  
@@ -83,4 +83,4 @@ for f in python/app/main.py python/app/cli.py python/app/mcp_server.py python/ap
 
 1. On [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens), create a **Granular Access Token** (or edit policy if npm allows): **Read and write**, scope **`@heytherevibin`**, **Bypass 2FA: on**.
 2. Update **`NPM_TOKEN`** in GitHub → **Settings → Secrets and variables → Actions**.
-3. Re-run the failed **Release** workflow, or delete and re-push the release tag (see “Recover if a tag exists…” above).
+3. Re-run the failed **skillforge release** workflow, or delete and re-push the release tag (see “Recover if a tag exists…” above).
