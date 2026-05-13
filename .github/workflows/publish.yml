@@ -16,15 +16,6 @@ jobs:
           node-version: 18
           registry-url: https://registry.npmjs.org/
       
-      - name: Publish to npm
-        run: npm publish
+      - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: heytherevibin-skillforge-*.tgz
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
