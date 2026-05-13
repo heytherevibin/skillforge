@@ -70,7 +70,7 @@ npm test
 Python (syntax only):
 
 ```bash
-for f in python/app/main.py python/app/cli.py python/app/mcp_server.py python/app/auth.py; do python3 -m py_compile "$f"; done
+for f in python/app/main.py python/app/cli.py python/app/mcp_server.py python/app/auth.py python/app/events_cli.py python/app/materialize.py python/app/db_paths.py python/app/route_cli.py; do python3 -m py_compile "$f"; done
 ```
 
 ## Troubleshooting: `EOTP` / one-time password in CI

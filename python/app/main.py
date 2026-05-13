@@ -1,17 +1,11 @@
 """
-skillforge — adaptive skill orchestrator for Claude.
+skillforge — skill orchestrator co-tool for Claude (MCP-first).
 
-Architecture:
-    Client → /chat → Orchestrator
-                       ├─ Embeddings: prompt vs all skills → top 15 candidates
-                       ├─ LLM router (Haiku): picks final 3-7
-                       ├─ Apply learned bias from past usage
-                       ├─ Inject SKILL.md content into system prompt
-                       └─ Stream Claude response back
-                     ↓
-                  SQLite (telemetry + learning state)
-                     ↓
-                  /dashboard (live observability)
+Primary surface: MCP stdio — route_skills and related tools for hosts
+(Claude Desktop, Cursor, Claude Code).
+
+Optional: headless HTTP API (POST /chat, /events, …) for integrations.
+Live usage: `skillforge events --watch` (terminal).
 """
 from __future__ import annotations
 
@@ -19,32 +13,84 @@ import asyncio
 import json
 import os
 import sqlite3
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 from anthropic import AsyncAnthropic
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sentence_transformers import SentenceTransformer
+
+from app.db_paths import global_db_path, resolve_orchestrator_db
 
 # ---------- Config (env-driven so the Node wrapper controls paths) ----------
 BUNDLED_SKILLS = Path(os.getenv("SKILLFORGE_BUNDLED_SKILLS", "./skills"))
 USER_SKILLS = Path(os.getenv("SKILLFORGE_USER_SKILLS", str(Path.home() / ".skillforge" / "skills")))
-DB_PATH = Path(os.getenv("SKILLFORGE_DB_PATH", str(Path.home() / ".skillforge" / "data" / "orchestrator.db")))
+
+
+DB_PATH = global_db_path()
+
+
 EMBED_MODEL = os.getenv("SKILLFORGE_EMBED_MODEL", "all-MiniLM-L6-v2")
 ROUTER_MODEL = os.getenv("SKILLFORGE_ROUTER_MODEL", "claude-haiku-4-5-20251001")
 ANSWER_MODEL = os.getenv("SKILLFORGE_ANSWER_MODEL", "claude-opus-4-7")
 TOP_K_CANDIDATES = int(os.getenv("SKILLFORGE_TOP_K", "15"))
 MAX_ACTIVE_SKILLS = int(os.getenv("SKILLFORGE_MAX_ACTIVE", "7"))
 REROUTE_THRESHOLD = float(os.getenv("SKILLFORGE_REROUTE_THRESHOLD", "0.4"))
+# "" | "full" | "embedding" — embedding skips Haiku and takes top skills from the shortlist only.
+SKILLFORGE_ROUTER_MODE = os.getenv("SKILLFORGE_ROUTER_MODE", "").strip().lower()
 
-STATIC_DIR = Path(__file__).parent.parent / "static"
+
+def build_router_and_skills(
+    *,
+    log: bool = True,
+    log_prefix: str = "[skillforge]",
+) -> tuple[Router, dict[str, Skill]]:
+    """Load embedding model, skill catalog, and Router (shared by MCP and ``skillforge route`` CLI)."""
+    if log:
+        print(f"{log_prefix} Loading skills...", file=sys.stderr)
+    skills = load_all_skills()
+    embed_model = SentenceTransformer(os.getenv("SKILLFORGE_EMBED_MODEL", "all-MiniLM-L6-v2"))
+    key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    mode = SKILLFORGE_ROUTER_MODE
+    if mode == "embedding":
+        anthropic = None
+        router_note = "embedding-only (SKILLFORGE_ROUTER_MODE=embedding)"
+    elif mode == "full":
+        if key:
+            anthropic = AsyncAnthropic()
+            router_note = "full Haiku router (SKILLFORGE_ROUTER_MODE=full)"
+        else:
+            anthropic = None
+            router_note = (
+                "embedding-only (SKILLFORGE_ROUTER_MODE=full but no ANTHROPIC_API_KEY — "
+                "Haiku routing skipped)"
+            )
+    elif key:
+        anthropic = AsyncAnthropic()
+        router_note = "full Haiku router (default; ANTHROPIC_API_KEY set)"
+    else:
+        anthropic = None
+        router_note = (
+            "embedding-only (no ANTHROPIC_API_KEY — keyless. "
+            "Set ANTHROPIC_API_KEY for Haiku routing.)"
+        )
+    if log:
+        print(f"{log_prefix} {router_note}", file=sys.stderr)
+        print(
+            f"{log_prefix} Loaded {len(skills)} skills from bundled={BUNDLED_SKILLS} user={USER_SKILLS}",
+            file=sys.stderr,
+        )
+    router = Router(skills, embed_model, anthropic)
+    skmap = {s.name: s for s in skills}
+    return router, skmap
 
 
 # ---------- Skill loading ----------
@@ -124,10 +170,34 @@ def load_all_skills() -> list[Skill]:
     return list(by_name.values())
 
 
+def iter_skill_md_paths() -> list[Path]:
+    """All discovered SKILL.md paths in load order (bundled, then user overrides)."""
+    paths: list[Path] = []
+    for src_dir in (BUNDLED_SKILLS, USER_SKILLS):
+        if not src_dir.exists():
+            continue
+        for skill_md in sorted(src_dir.glob("*/SKILL.md")):
+            paths.append(skill_md)
+    return paths
+
+
+def skill_catalog_manifest() -> tuple[tuple[str, int], ...]:
+    """Stable on-disk fingerprint for MCP hot-reload (resolved path + mtime_ns)."""
+    rows: list[tuple[str, int]] = []
+    for skill_md in iter_skill_md_paths():
+        try:
+            mtime_ns = int(skill_md.stat().st_mtime_ns)
+        except OSError:
+            mtime_ns = 0
+        rows.append((str(skill_md.resolve()), mtime_ns))
+    return tuple(rows)
+
+
 # ---------- Database ----------
-def init_db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
+def init_db(db_file: Path | None = None):
+    path = global_db_path() if db_file is None else db_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(str(path))
     con.executescript("""
         CREATE TABLE IF NOT EXISTS events (
             id TEXT PRIMARY KEY,
@@ -225,7 +295,7 @@ def set_skill_disabled(con, name, disabled: bool, user_id=""):
 
 # ---------- Router ----------
 class Router:
-    def __init__(self, skills, embed_model, anthropic):
+    def __init__(self, skills, embed_model, anthropic: Optional[AsyncAnthropic]):
         self.skills = skills
         self.embed_model = embed_model
         self.anthropic = anthropic
@@ -253,7 +323,18 @@ class Router:
         top_idx = np.argsort(-biased)[:k]
         return [(self.skills[i], float(sims[i])) for i in top_idx if biased[i] > -100]
 
+    def pick_final_embedding_only(self, candidates):
+        """Pick up to MAX_ACTIVE_SKILLS from the shortlist order (similarity + weights). No LLM call."""
+        if not candidates:
+            return [], "no candidates available"
+        names = [s.name for s, _ in candidates[:MAX_ACTIVE_SKILLS]]
+        return names, (
+            "embedding-only: top candidates by similarity and learned weights"
+        )
+
     async def pick_final(self, prompt, conversation, candidates):
+        if self.anthropic is None:
+            return self.pick_final_embedding_only(candidates)
         if not candidates:
             return [], "no candidates available"
         catalog = "\n".join(
@@ -300,6 +381,70 @@ def jaccard_change(old, new):
     return 1.0 - (inter / union)
 
 
+async def run_route_turn(
+    con: sqlite3.Connection,
+    router: Router,
+    prompt: str,
+    conversation: list,
+    user_id: str = "",
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    """Shared routing + session + telemetry for HTTP /chat and MCP route_skills.
+
+    Updates sessions, skill usage stats, and writes a route row to events.
+    """
+    sid = session_id or str(uuid.uuid4())
+    t0 = time.time()
+    candidates = router.shortlist(prompt, con, user_id=user_id)
+    picked_names, reasoning = await router.pick_final(prompt, conversation, candidates)
+    route_ms = (time.time() - t0) * 1000
+
+    prev_active: set[str] = set()
+    cur = con.execute(
+        "SELECT active_skills FROM sessions WHERE id = ? AND user_id = ?",
+        (sid, user_id),
+    )
+    row = cur.fetchone()
+    if row and row[0]:
+        prev_active = set(json.loads(row[0]))
+    change = jaccard_change(prev_active, set(picked_names))
+    rerouted = change >= REROUTE_THRESHOLD and bool(prev_active)
+
+    con.execute(
+        """INSERT INTO sessions (id, user_id, created_at, active_skills, turn_count) VALUES (?, ?, ?, ?, 1)
+           ON CONFLICT(id) DO UPDATE SET active_skills = ?, turn_count = turn_count + 1""",
+        (sid, user_id, time.time(), json.dumps(picked_names), json.dumps(picked_names)),
+    )
+    con.commit()
+    for n in picked_names:
+        update_skill_stat(con, n, "uses", 1, user_id=user_id)
+
+    event = {
+        "type": "route",
+        "session_id": sid,
+        "user_id": user_id,
+        "prompt": prompt[:300],
+        "candidates": [{"name": s.name, "score": sc} for s, sc in candidates[:10]],
+        "picked": picked_names,
+        "reasoning": reasoning,
+        "rerouted": rerouted,
+        "change_pct": round(change * 100, 1),
+        "route_ms": round(route_ms, 1),
+        "ts": time.time(),
+    }
+    log_event(con, sid, "route", event, user_id=user_id)
+    return {
+        "session_id": sid,
+        "picked_names": picked_names,
+        "reasoning": reasoning,
+        "candidates": candidates,
+        "route_ms": route_ms,
+        "rerouted": rerouted,
+        "change": change,
+        "event": event,
+    }
+
+
 # ---------- App ----------
 app_state: dict[str, Any] = {}
 
@@ -313,14 +458,17 @@ async def lifespan(app: FastAPI):
         print("[skillforge] WARNING: no skills found")
     embed_model = SentenceTransformer(EMBED_MODEL)
     anthropic = AsyncAnthropic()
-    router = Router(skills, embed_model, anthropic)
+    router_anthropic = None if SKILLFORGE_ROUTER_MODE == "embedding" else anthropic
+    if router_anthropic is None:
+        print("[skillforge] Router mode: embedding-only (Haiku step skipped; /chat still uses ANSWER model)")
+    print("[skillforge] Live usage (terminal): skillforge events --watch")
+    router = Router(skills, embed_model, router_anthropic)
     con = init_db()
     app_state.update(
         skills={s.name: s for s in skills},
         router=router,
         anthropic=anthropic,
         con=con,
-        websockets=set(),
     )
     yield
     con.close()
@@ -346,16 +494,6 @@ class DisableRequest(BaseModel):
     disabled: bool
 
 
-async def broadcast(event):
-    dead = set()
-    for ws in app_state.get("websockets", set()):
-        try:
-            await ws.send_json(event)
-        except Exception:
-            dead.add(ws)
-    app_state["websockets"] -= dead
-
-
 @app.post("/chat")
 async def chat(req: ChatRequest, request: Request):
     from app.auth import resolve_user
@@ -363,32 +501,17 @@ async def chat(req: ChatRequest, request: Request):
     router: Router = app_state["router"]
     con = app_state["con"]
     anthropic: AsyncAnthropic = app_state["anthropic"]
-    session_id = req.session_id or str(uuid.uuid4())
 
-    t0 = time.time()
-    candidates = router.shortlist(req.prompt, con, user_id=user_id)
-    picked_names, reasoning = await router.pick_final(req.prompt, req.conversation, candidates)
-    route_ms = (time.time() - t0) * 1000
-
-    prev_active = set()
-    cur = con.execute(
-        "SELECT active_skills FROM sessions WHERE id = ? AND user_id = ?",
-        (session_id, user_id),
+    result = await run_route_turn(
+        con,
+        router,
+        req.prompt,
+        req.conversation,
+        user_id=user_id,
+        session_id=req.session_id,
     )
-    row = cur.fetchone()
-    if row and row[0]:
-        prev_active = set(json.loads(row[0]))
-    change = jaccard_change(prev_active, set(picked_names))
-    rerouted = change >= REROUTE_THRESHOLD and bool(prev_active)
-
-    con.execute(
-        """INSERT INTO sessions (id, user_id, created_at, active_skills, turn_count) VALUES (?, ?, ?, ?, 1)
-           ON CONFLICT(id) DO UPDATE SET active_skills = ?, turn_count = turn_count + 1""",
-        (session_id, user_id, time.time(), json.dumps(picked_names), json.dumps(picked_names)),
-    )
-    con.commit()
-    for n in picked_names:
-        update_skill_stat(con, n, "uses", 1, user_id=user_id)
+    session_id = result["session_id"]
+    picked_names = result["picked_names"]
 
     skills_map = app_state["skills"]
     skill_blocks = []
@@ -401,22 +524,6 @@ async def chat(req: ChatRequest, request: Request):
         "for this turn based on the user's request. Use them when relevant; ignore them when not.\n\n"
         + "\n\n".join(skill_blocks)
     ) if skill_blocks else "You are a helpful assistant."
-
-    event = {
-        "type": "route",
-        "session_id": session_id,
-        "user_id": user_id,
-        "prompt": req.prompt[:300],
-        "candidates": [{"name": s.name, "score": sc} for s, sc in candidates[:10]],
-        "picked": picked_names,
-        "reasoning": reasoning,
-        "rerouted": rerouted,
-        "change_pct": round(change * 100, 1),
-        "route_ms": round(route_ms, 1),
-        "ts": time.time(),
-    }
-    log_event(con, session_id, "route", event, user_id=user_id)
-    await broadcast(event)
 
     messages = req.conversation + [{"role": "user", "content": req.prompt}]
 
@@ -522,24 +629,19 @@ def recent_events(request: Request, limit: int = 50):
     ]
 
 
-@app.websocket("/ws")
-async def ws_endpoint(ws: WebSocket):
-    await ws.accept()
-    app_state.setdefault("websockets", set()).add(ws)
-    try:
-        while True:
-            await ws.receive_text()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        app_state["websockets"].discard(ws)
-
-
-@app.get("/", response_class=HTMLResponse)
-def dashboard():
-    return (STATIC_DIR / "dashboard.html").read_text(encoding="utf-8")
+@app.get("/")
+def root():
+    return {
+        "service": "skillforge",
+        "docs": "POST /chat, GET /events, GET /skills, GET /healthz",
+        "live_log": "skillforge events --watch",
+    }
 
 
 @app.get("/healthz")
 def health():
-    return {"skills_loaded": len(app_state.get("skills", {})), "ok": True}
+    return {
+        "skills_loaded": len(app_state.get("skills", {})),
+        "ok": True,
+        "live_log": "skillforge events --watch",
+    }

@@ -6,9 +6,11 @@
   <a href="https://github.com/heytherevibin/skillforge/actions/workflows/ci.yml"><img src="https://github.com/heytherevibin/skillforge/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
-**Skillforge** is an adaptive **skill orchestration** layer for applications that use **Anthropic Claude**. It maintains a catalog of agent skills (`SKILL.md`), selects the few that matter for each user turn using **local embeddings** plus a **lightweight router model**, supports **mid-conversation re-routing**, optional **per-user learning**, and ships as a **single npm package** with a **Node** CLI and **Python** backend.
+**Skillforge** is a **skill orchestration co-tool for Claude** (and other MCP hosts). It keeps a catalog of **`SKILL.md`** skills, **routes** the few that match each task using **local embeddings** and an optional **Haiku** step, and returns their bodies for **injection into the host model**. Optional **SQLite** learning improves routing over time.
 
-Use it as a **local HTTP service** (with dashboard), **terminal chat**, **stdio MCP server** for MCP-capable clients, or integrate via the **HTTP API**.
+**Primary interface:** **stdio MCP** (`skillforge mcp`) — add it to Claude Desktop, Cursor, or Claude Code.
+
+**Optional:** **headless HTTP API** (`skillforge start`) for `/chat`, `/events`, and integrations. **Real-time usage:** run **`skillforge events --watch`** in a terminal (top skills, active sessions, and live **route** / **feedback** lines from SQLite).
 
 ---
 
@@ -42,9 +44,10 @@ Use it as a **local HTTP service** (with dashboard), **terminal chat**, **stdio 
 | **Hybrid routing** | Embedding shortlist plus a fast **Claude Haiku** routing step for final selection. |
 | **Adaptation** | Re-routes when the conversation topic shifts (configurable threshold). |
 | **Learning loop** | Optional weights from usage and explicit feedback improve routing over time. |
-| **Observability** | Web dashboard and WebSocket stream for routing decisions and telemetry. |
+| **Observability** | **`skillforge events`**: snapshots of **usage** + **active sessions**, **`--watch`** for realtime; **`--verbose`** for route detail. No browser UI. |
+| **Project bootstrap** | MCP tools **`materialize_project`** and **`skillforge_bootstrap`** write `.cursor/rules`, **`docs/SKILLFORGE-PRD.md`**, and a **`CLAUDE.md`** section (map **`/skillforge`** in rules to MCP tools). |
 | **Extensibility** | Custom skills, git-based **packs**, and overrides under a single user config directory. |
-| **Deployment flexibility** | Same core behavior from **HTTP**, **CLI chat**, or **MCP stdio**. |
+| **Deployment flexibility** | **MCP stdio** (default story), optional **HTTP API**, dev **`skillforge chat`** harness. |
 
 Bundled content includes **200+** curated skills (coding, security, research, frontend/backend patterns, and more). Exact counts are validated in CI.
 
@@ -56,7 +59,7 @@ Bundled content includes **200+** curated skills (coding, security, research, fr
 |------------|---------|--------|
 | **Node.js** | **>= 18** | Required for the CLI bootstrapper. Continuous integration runs on **Node 22**. |
 | **Python** | **>= 3.10** | Used on the host PATH for embeddings and the FastAPI orchestrator. |
-| **Anthropic API** | — | **`ANTHROPIC_API_KEY`** is required for routing and generation. |
+| **Anthropic API** | — | **`ANTHROPIC_API_KEY`** is required for **HTTP**, **CLI chat**, and the **full** (Haiku) router. **MCP** can run **without** it when using **embedding-only** routing (default when the key is omitted; see [MCP](#model-context-protocol-mcp)). |
 
 **First run:** The CLI creates **`~/.skillforge/`**, a dedicated **Python venv**, installs Python dependencies, and caches the default embedding model (typically on the order of one to two minutes once; subsequent starts are fast).
 
@@ -65,11 +68,18 @@ Bundled content includes **200+** curated skills (coding, security, research, fr
 ## Quick start
 
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-…"
-npx --yes @heytherevibin/skillforge
+npx --yes @heytherevibin/skillforge --help
 ```
 
-This starts the **HTTP server** and opens the **dashboard** (default port **8000**). Use **`skillforge chat`** for an interactive terminal session or **`skillforge mcp`** for MCP stdio mode after [global install](#installation).
+Add Skillforge to your MCP config (see [MCP](#model-context-protocol-mcp)). No `ANTHROPIC_API_KEY` is required for **embedding-only** routing.
+
+Optional HTTP API (e.g. for `skillforge chat`): set **`ANTHROPIC_API_KEY`**, then:
+
+```bash
+skillforge start
+```
+
+Live log (usage + routes): **`skillforge events --watch`**.
 
 ---
 
@@ -99,14 +109,39 @@ Source and issues: [github.com/heytherevibin/skillforge](https://github.com/heyt
 
 | Command | Purpose |
 |---------|---------|
-| `skillforge` | HTTP server **and** dashboard (default browser open). |
-| `skillforge start [--port=8000]` | HTTP server only. |
-| `skillforge chat` | Interactive chat in the terminal. |
-| `skillforge mcp` | **stdio** MCP server for external clients. |
+| `skillforge --help` | Recommended first step; **MCP** is the main integration. |
+| `skillforge mcp` | **stdio** MCP server (Claude, Cursor, …). |
+| `skillforge start [--port=8000]` | Optional **HTTP API** (no HTML or WebSocket UI). |
+| `skillforge events [--watch]` | **Terminal** log: usage snapshot + routes; see **`skillforge events --help`**. |
+| `skillforge route […]` | **Terminal** routing — same pipeline as MCP **`route_skills`** (loads embed model); see **`skillforge route --help`**. |
+| `skillforge mcp config [--local] [--with-anthropic]` | **stdout**: JSON snippet for **`mcp.json`** (merge manually). |
+| `skillforge chat` | Dev harness: HTTP client to **`POST /chat`** (needs **`start`** + API key). |
 
 ### Model Context Protocol (MCP)
 
-Add to your MCP host configuration (paths vary by product). Example for Claude Desktop on macOS (`claude_desktop_config.json`):
+You can run the MCP server **without** `ANTHROPIC_API_KEY`: routing uses **embeddings + shortlist only** (no Haiku call). The host still uses its own billing for the conversation.
+
+| `SKILLFORGE_ROUTER_MODE` | `ANTHROPIC_API_KEY` | MCP routing |
+|--------------------------|---------------------|-------------|
+| *(unset)* — auto | omitted | Embedding-only (keyless) |
+| *(unset)* — auto | set | Full router (Haiku) |
+| `embedding` | either | Embedding-only |
+| `full` | set recommended | Full router (Haiku); falls back on API errors |
+
+Add to your MCP host configuration (paths vary by product). Example for Claude Desktop on macOS (`claude_desktop_config.json`) **without** an extra API key:
+
+```json
+{
+  "mcpServers": {
+    "skillforge": {
+      "command": "npx",
+      "args": ["-y", "@heytherevibin/skillforge", "mcp"]
+    }
+  }
+}
+```
+
+With **Haiku** routing (uses your Anthropic key in the MCP process):
 
 ```json
 {
@@ -122,14 +157,23 @@ Add to your MCP host configuration (paths vary by product). Example for Claude D
 }
 ```
 
+**If the server shows as connected but lists “No tools”:** the MCP host only understands **JSON-RPC on stdout**. Older Skillforge builds printed setup text to **stdout**, which breaks **`tools/list`**. Update the npm package, run **`skillforge install`** once if needed, then **fully quit and reopen** Claude / Cursor. The CLI now sends banners and pip output to **stderr** only.
+
 **MCP tools exposed**
 
 | Tool | Purpose |
 |------|---------|
-| `route_skills(prompt)` | Returns bodies of routed **`SKILL.md`** files as text for client injection. |
-| `list_skills()` | Catalog overview. |
-| `skill_feedback(name, +1 \| -1)` | Feedback for the learning loop. |
-| `disable_skill(name, true \| false)` | Toggle skills without deleting files. |
+| `route_skills` | Returns routed **`SKILL.md`** bodies. Pass **`project_root`** (workspace path) for per-repo SQLite under **`.skillforge/orchestrator.db`** and learning; or set env **`SKILLFORGE_PROJECT_ROOT`**. Optional **`session_id`**, **`user_id`** / **`SKILLFORGE_MCP_USER_ID`**. |
+| `list_skills` | Catalog overview; optional **`user_id`** scopes usage stats. |
+| `skill_feedback` | Feedback for the learning loop; optional **`user_id`**, **`session_id`** (for `/events`). |
+| `skill_referenced` | Mark a routed skill as **used** in the reply (increments **`referenced`** + weight; optional **`user_id`**). |
+| `disable_skill` | Toggle skills; optional **`user_id`**. |
+| `materialize_project` | Writes **`.cursor/rules/skillforge.mdc`**, **`docs/SKILLFORGE-PRD.md`**, updates **`CLAUDE.md`** (Skillforge block). Args: **`project_root`**, **`skill_names`** from **`route_skills`**. |
+| `skillforge_bootstrap` | **`route_skills`** + **`materialize_project`** in one call (needs **`project_root`**). |
+
+`/skillforge` is not registered by npm installs; add a **Cursor rule** or **CLAUDE.md** instruction so the agent calls these tools when the user asks.
+
+Route events go to **`~/.skillforge/data/orchestrator.db`**; use **`skillforge events`** or **`GET /events`** when HTTP is running.
 
 ### Multi-user authentication
 
@@ -184,12 +228,12 @@ User prompt
     → Local embeddings (sentence-transformers)
     → Cosine similarity + per-user weights
     → Top-K candidates
-    → Router model (Haiku) selects final active skills
+    → Router model (Haiku) selects final active skills — *or* embedding-only mode takes top-N from candidates
     → Skill bodies injected; response model answers (e.g. Opus)
     → Usage signals update weights (optional)
 ```
 
-Re-route: when overlap between successive active sets falls below a configurable threshold, the pipeline selects a new set for the next turn. Events stream to the dashboard over **WebSocket**.
+Re-route: when overlap between successive active sets falls below a configurable threshold, the pipeline selects a new set for the next turn. Events are stored in SQLite; stream them with **`skillforge events --watch`** (or **`GET /events`** when HTTP is running).
 
 ---
 
@@ -199,7 +243,8 @@ Environment variables (see also inline help and server defaults):
 
 | Variable | Default | Role |
 |----------|---------|------|
-| `ANTHROPIC_API_KEY` | — | **Required** for API access. |
+| `ANTHROPIC_API_KEY` | — | **Required** for HTTP/CLI chat and answer streaming; **optional** for MCP if you use embedding-only routing (default when unset). |
+| `SKILLFORGE_ROUTER_MODE` | *(auto)* | `full` = always use Haiku for final pick (MCP: requires key for routing). `embedding` = skip Haiku; top `SKILLFORGE_MAX_ACTIVE` from shortlist. Unset = **auto**: MCP uses embedding-only when `ANTHROPIC_API_KEY` is absent, else full. HTTP: unset or `full` uses Haiku when key is present; set `embedding` to skip Haiku on the server (answer model still needs a key). |
 | `SKILLFORGE_PORT` | `8000` | HTTP listen port. |
 | `SKILLFORGE_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model id. |
 | `SKILLFORGE_ROUTER_MODEL` | `claude-haiku-4-5-20251001` | Routing model. |
@@ -207,7 +252,11 @@ Environment variables (see also inline help and server defaults):
 | `SKILLFORGE_TOP_K` | `15` | Embedding shortlist size. |
 | `SKILLFORGE_MAX_ACTIVE` | `7` | Maximum skills injected per turn. |
 | `SKILLFORGE_REROUTE_THRESHOLD` | `0.4` | Re-route sensitivity (Jaccard distance). |
-| `SKILLFORGE_AUTH_TOKENS` | — | Managed by `skillforge auth`; internal use. |
+| `SKILLFORGE_MCP_USER_ID` | `""` | Default logical **user id** for MCP tool calls when arguments omit `user_id` (weights, sessions, events—same SQLite namespace as HTTP `resolve_user`). |
+| `SKILLFORGE_PROJECT_ROOT` | `""` | Default workspace root when MCP **`project_root`** is omitted: events/weights/sessions live in **`<root>/.skillforge/orchestrator.db`**. Prefer passing **`project_root`** on each tool call from the host. |
+| `SKILLFORGE_SKILL_HOT_RELOAD` | `1` | When **`0`** / **`false`**, disable **SKILL.md** hot-reload; restart the MCP process to refresh the catalog. |
+| `SKILLFORGE_WATCH_SKILLS_INTERVAL` | `30` | Seconds between background catalog checks when hot reload is on. **`0`**: no background polling and no MCP **`tools.listChanged`**; **`tools/list`** and **`tools/call`** still reload when files change. |
+| `SKILLFORGE_MCP_LIST_CHANGED` | `1` | When **`0`** / **`false`**, never emit **`notifications/tools/list_changed`** (and **`listChanged`** is not advertised), even if a background interval is set. |
 
 ---
 
@@ -220,15 +269,24 @@ Environment variables (see also inline help and server defaults):
 | `POST` | `/skills/disable` | Enable/disable a skill flag. |
 | `GET` | `/skills` | Catalog with stats and weights. |
 | `GET` | `/events` | Recent routing events (`?limit=`). |
-| `WS` | `/ws` | Live event stream (dashboard). |
-| `GET` | `/` | Web dashboard. |
-| `GET` | `/healthz` | Health metadata. |
+| `GET` | `/` | JSON service hint (use **`skillforge events --watch`** for a live terminal log). |
+| `GET` | `/healthz` | Health metadata (`skills_loaded`, **`live_log`** hint). |
 
 Authenticated mode applies **`Bearer`** tokens as described above. Do not expose unauthenticated instances beyond trusted networks.
 
 ---
 
 ## Local data and operations
+
+Optional **per-project** state (when **`project_root`** or **`SKILLFORGE_PROJECT_ROOT`** is set, or MCP passes **`project_root`** on tools):
+
+```
+<workspace>/.skillforge/
+├── orchestrator.db   # SQLite for this repo (sessions, weights, events)
+└── last_route.json   # Last route_skills snapshot (after a routed call)
+```
+
+Global default when no project root:
 
 ```
 ~/.skillforge/
@@ -242,6 +300,7 @@ Authenticated mode applies **`Bearer`** tokens as described above. Do not expose
 
 | Command | Effect |
 |---------|--------|
+| `skillforge events` | Prints a **usage** snapshot and recent **`route`** / **`feedback`** rows; **`--watch`**, **`--project-root`** (per-repo DB), **`--user`**, **`--verbose`** (see **`--help`**). |
 | `skillforge reset` | Clears learning state and event history in the database. |
 | `skillforge install` | Re-runs bootstrap (venv and dependencies). |
 | `rm -rf ~/.skillforge` | Full removal of local state and venv. |

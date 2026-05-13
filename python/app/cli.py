@@ -1,4 +1,4 @@
-"""Interactive chat through the orchestrator."""
+"""Dev harness: terminal client for POST /chat (requires `skillforge start` + API key)."""
 import argparse
 import json
 import sys

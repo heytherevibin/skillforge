@@ -1,25 +1,16 @@
 #!/usr/bin/env node
 /**
- * skillforge — adaptive skill orchestrator for Claude
+ * skillforge — skill orchestrator co-tool for Claude (MCP-first)
  *
  * Usage:
- *   skillforge                       # start server + open dashboard
- *   skillforge start                 # start server only
- *   skillforge chat                  # interactive CLI client
- *   skillforge mcp                   # run as an MCP stdio server
- *   skillforge install               # one-time setup (auto-runs on first launch)
- *   skillforge skills add <path>     # add a local skill folder
- *   skillforge skills list           # list catalog
- *   skillforge skills remove <name>  # remove a user-added skill
- *   skillforge pack install <repo>   # install a skill pack from git
- *   skillforge pack list             # list installed packs
- *   skillforge pack update <name>    # update a pack
- *   skillforge pack remove <name>    # uninstall a pack
- *   skillforge auth add <user>       # create a bearer token for a user
- *   skillforge auth list             # list users + tokens
- *   skillforge auth remove <user>    # revoke a token
- *   skillforge reset                 # wipe learned state
- *   skillforge --help
+ *   skillforge, skillforge --help   Show help (primary path: MCP, not a web app)
+ *   skillforge mcp                   MCP stdio server (Claude / Cursor / …)
+ *   skillforge start [--port=8000]   Optional headless HTTP API (no browser UI)
+ *   skillforge events [--watch] [--limit=N]     Print SQLite routing events
+ *   skillforge route [words…] [--prompt=…]     Same routing as MCP route_skills (terminal)
+ *   skillforge chat                  Dev harness (needs `start` + ANTHROPIC_API_KEY)
+ *   skillforge install               One-time Python venv + deps
+ *   skillforge skills … / pack … / auth … / reset
  */
 
 const path = require('path');
@@ -52,10 +43,10 @@ const c = {
   cyan: (s) => `\x1b[36m${s}\x1b[0m`,
 };
 
-function log(...m) { console.log(...m); }
+function log(...m) { console.error(...m); }
 function err(...m) { console.error(c.red('✗'), ...m); }
-function ok(...m) { console.log(c.green('✓'), ...m); }
-function info(...m) { console.log(c.cyan('▸'), ...m); }
+function ok(...m) { console.error(c.green('✓'), ...m); }
+function info(...m) { console.error(c.cyan('▸'), ...m); }
 
 // ---- platform helpers ----
 function isWindows() { return process.platform === 'win32'; }
@@ -109,10 +100,15 @@ function runSetup() {
   }
   ok(`Found ${py.version}`);
 
-  // 2. Create venv
+  // 2. Create venv (never write child's stdout to process.stdout — MCP needs a clean JSON-RPC stream)
   if (!fs.existsSync(venvPython())) {
     info('Creating Python virtual environment...');
-    const r = spawnSync(py.bin, ['-m', 'venv', VENV_DIR], { stdio: 'inherit' });
+    const r = spawnSync(py.bin, ['-m', 'venv', VENV_DIR], {
+      encoding: 'utf8',
+      stdio: ['inherit', 'pipe', 'pipe'],
+    });
+    if (r.stdout) process.stderr.write(r.stdout);
+    if (r.stderr) process.stderr.write(r.stderr);
     if (r.status !== 0) {
       err('Failed to create venv.');
       process.exit(1);
@@ -125,11 +121,12 @@ function runSetup() {
   // 3. Install Python deps
   info('Installing Python dependencies (this is the slow part)...');
   const reqFile = path.join(PKG_ROOT, 'python', 'requirements.txt');
-  const pipR = spawnSync(
-    venvPip(),
-    ['install', '--upgrade', '--quiet', '-r', reqFile],
-    { stdio: 'inherit' }
-  );
+  const pipR = spawnSync(venvPip(), ['install', '--upgrade', '--quiet', '-r', reqFile], {
+    encoding: 'utf8',
+    stdio: ['inherit', 'pipe', 'pipe'],
+  });
+  if (pipR.stdout) process.stderr.write(pipR.stdout);
+  if (pipR.stderr) process.stderr.write(pipR.stderr);
   if (pipR.status !== 0) {
     err('Failed to install Python dependencies.');
     process.exit(1);
@@ -231,15 +228,15 @@ function buildEnv(extra = {}) {
   };
 }
 
-function startServer({ port = 8000, openDashboard = false } = {}) {
+function startServer({ port = 8000 } = {}) {
   setupIfNeeded();
   checkApiKey();
 
   const env = buildEnv({ SKILLFORGE_PORT: String(port) });
   const authEnabled = Object.keys(loadAuth()).length > 0;
 
-  info(`Starting orchestrator on http://localhost:${port}`);
-  log(c.dim(`  Dashboard:  http://localhost:${port}/`));
+  info(`Starting HTTP API on http://localhost:${port}`);
+  log(c.dim('  Live log:     skillforge events --watch'));
   log(c.dim(`  Skills dir: ${USER_SKILLS_DIR} (drop folders here to add)`));
   log(c.dim(`  Data dir:   ${DATA_DIR}`));
   log(c.dim(`  Auth:       ${authEnabled ? 'enabled (bearer token required)' : 'disabled (single-user)'}`));
@@ -251,24 +248,42 @@ function startServer({ port = 8000, openDashboard = false } = {}) {
     { stdio: 'inherit', env }
   );
 
-  if (openDashboard) {
-    setTimeout(() => openUrl(`http://localhost:${port}/`), 3000);
-  }
-
   proc.on('exit', (code) => process.exit(code || 0));
   process.on('SIGINT', () => proc.kill('SIGINT'));
   process.on('SIGTERM', () => proc.kill('SIGTERM'));
 }
 
-function runMcpServer() {
-  // No api-key check yet — let the MCP client pick up errors via tool calls
+function printMcpConfig() {
   setupIfNeeded();
-  if (!process.env.ANTHROPIC_API_KEY) {
-    // For MCP, log to stderr — stdout is reserved for protocol
-    console.error('[skillforge-mcp] WARNING: ANTHROPIC_API_KEY not set; router calls will fail');
+  const useLocal = args.includes('--local');
+  const withKey = args.includes('--with-anthropic');
+  const cliJs = path.join(PKG_ROOT, 'bin', 'cli.js');
+  /** @type {Record<string, unknown>} */
+  const entry = useLocal
+    ? {
+        command: process.execPath,
+        args: [cliJs, 'mcp'],
+      }
+    : {
+        command: 'npx',
+        args: ['-y', NPM_PKG_NAME, 'mcp'],
+      };
+  if (withKey) {
+    entry.env = { ANTHROPIC_API_KEY: 'sk-ant-…' };
   }
+  const out = { mcpServers: { skillforge: entry } };
+  process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+  process.stderr.write(
+    c.dim(
+      'Merge into ~/.cursor/mcp.json, Claude Desktop config, etc. --local uses this package checkout; --with-anthropic adds env placeholder for Haiku routing.\n'
+    )
+  );
+}
+
+function runMcpServer() {
+  setupIfNeeded();
   const env = buildEnv();
-  // MCP protocol: speaks JSON-RPC over stdio. No banner on stdout.
+  // MCP JSON-RPC must own stdout. This process must not log to stdout after this point.
   const proc = spawn(venvPython(), ['-m', 'app.mcp_server'], {
     stdio: ['inherit', 'inherit', 'inherit'],
     env,
@@ -278,9 +293,24 @@ function runMcpServer() {
   process.on('SIGTERM', () => proc.kill('SIGTERM'));
 }
 
-function openUrl(url) {
-  const opener = isWindows() ? 'start' : (process.platform === 'darwin' ? 'open' : 'xdg-open');
-  spawn(opener, [url], { stdio: 'ignore', detached: true, shell: isWindows() }).unref();
+function runEventsCmd() {
+  setupIfNeeded();
+  const sub = args.slice(1);
+  const proc = spawn(venvPython(), ['-m', 'app.events_cli', ...sub], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
+}
+
+function runRouteCmd() {
+  setupIfNeeded();
+  const sub = args.slice(1);
+  const proc = spawn(venvPython(), ['-m', 'app.route_cli', ...sub], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
 }
 
 function runChat() {
@@ -343,7 +373,7 @@ function skillsRemove(name) {
   }
   const target = path.join(USER_SKILLS_DIR, name);
   if (!fs.existsSync(target)) {
-    err(`No user skill named "${name}". Bundled skills cannot be removed (but can be disabled in the dashboard).`);
+    err(`No user skill named "${name}". Bundled skills cannot be removed (use disable_skill via MCP or HTTP API).`);
     process.exit(1);
   }
   fs.rmSync(target, { recursive: true, force: true });
@@ -362,13 +392,16 @@ function reset() {
 
 function showHelp() {
   log(`
-${c.bold('skillforge')} — adaptive skill orchestrator for Claude
+${c.bold('skillforge')} — skill orchestrator co-tool for Claude (MCP-first)
 
 ${c.bold('Run modes:')}
-  skillforge                       Start HTTP server + open dashboard
-  skillforge start [--port=8000]   Start HTTP server only
-  skillforge chat                  Interactive chat in this terminal
-  skillforge mcp                   Run as an MCP stdio server (for Claude Desktop, etc.)
+  skillforge --help                This message (recommended first step)
+  skillforge mcp                   MCP stdio — primary integration for Claude / Cursor
+  skillforge mcp config [--local] [--with-anthropic]   Print JSON for MCP host (merge into mcp.json)
+  skillforge start [--port=8000]   Optional HTTP API (no web dashboard)
+  skillforge events [--watch] [--limit=N] [--verbose] [--user=…]   Live routing log + usage (see --help)
+  skillforge route [words…] [--project-root=…] [--session-id=…]   Route a prompt (see skillforge route --help)
+  skillforge chat                  Dev harness (needs start + ANTHROPIC_API_KEY)
 
 ${c.bold('Skills:')}
   skillforge skills list           List bundled and user skills
@@ -391,11 +424,12 @@ ${c.bold('Maintenance:')}
   skillforge install               Re-run setup (auto-runs on first launch)
   skillforge --help                This message
 
-${c.bold('First run:')} set ANTHROPIC_API_KEY, run ${c.cyan('skillforge')} — setup happens automatically.
+${c.bold('First run:')} ${c.cyan('skillforge install')} (auto on first command). Primary use: add MCP config (below). ${c.cyan('skillforge mcp')} needs no API key for embedding-only routing.
 ${c.bold('Config dir:')} ${CONFIG_DIR}
 
 ${c.bold('MCP integration:')}
-  To use skillforge from Claude Desktop, add this to your config:
+  Generate a config snippet: ${c.cyan('skillforge mcp config')} (add ${c.cyan('--local')} for this checkout, ${c.cyan('--with-anthropic')} for a key placeholder)
+  Minimal npx example:
     ${JSON.stringify({ mcpServers: { skillforge: { command: 'npx', args: ['-y', NPM_PKG_NAME, 'mcp'] } } })}
 `);
 }
@@ -407,20 +441,30 @@ async function main() {
     return;
   }
 
-  const portArg = args.find(a => a.startsWith('--port='));
-  const port = portArg ? parseInt(portArg.split('=')[1]) : 8000;
+  const portArg = args.find((a) => a.startsWith('--port='));
+  const port = portArg ? parseInt(portArg.split('=')[1], 10) : 8000;
 
   switch (cmd) {
     case undefined:
-      startServer({ port, openDashboard: true });
+      showHelp();
       break;
     case 'start':
-      startServer({ port, openDashboard: false });
+      startServer({ port });
+      break;
+    case 'events':
+      runEventsCmd();
+      break;
+    case 'route':
+      runRouteCmd();
       break;
     case 'chat':
       runChat();
       break;
     case 'mcp':
+      if (args[1] === 'config') {
+        printMcpConfig();
+        break;
+      }
       runMcpServer();
       break;
     case 'install':

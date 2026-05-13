@@ -46,9 +46,14 @@ jobs:
 
       - name: Check Python syntax
         run: |
-          for f in python/app/main.py python/app/cli.py python/app/mcp_server.py python/app/auth.py; do
+          for f in python/app/main.py python/app/cli.py python/app/mcp_server.py python/app/auth.py python/app/events_cli.py python/app/materialize.py python/app/db_paths.py python/app/route_cli.py; do
             python3 -m py_compile "$f"
           done
+
+      - name: Python unit tests (db_paths)
+        run: |
+          pip install -r python/requirements-dev.txt
+          cd python && PYTHONPATH=. pytest tests/ -q
 
       - name: Verify skills bundle
         run: |
