@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.1
+
+- **README:** Clarify that **npm** **`latest`** and **`npm view`** are authoritative for semver; note CDN/browser cache can make the shields **npm** badge lag briefly after a publish. **Badge:** add **`cacheSeconds`** so the image URL refreshes sooner.
+
 ## 0.10.0
 
 - **CI:** Minimum bundled **`SKILL.md`** count is configured via **`ci/bundle-gate.json`** (`minSkillMdFiles`); **`.github/workflows/ci.yml`** reads that file. The **`ci/`** directory is included in the published package **`files`** list for transparency. Health + **route-eval** step chains both commands under a single **`cd python`** so the second command does not run from **`python/python`**.

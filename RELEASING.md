@@ -5,7 +5,7 @@
 | Workflow | File | When it runs |
 |----------|------|----------------|
 | **CI** | [.github/workflows/ci.yml](.github/workflows/ci.yml) | Every **push** and **pull request** to `main`; also **`workflow_dispatch`** (run manually from the Actions tab) |
-| **Skillforge release** | [.github/workflows/release.yml](.github/workflows/release.yml) | When a **`v*`** tag is **pushed** to the repository (e.g. `v0.10.0`) |
+| **Skillforge release** | [.github/workflows/release.yml](.github/workflows/release.yml) | When a **`v*`** tag is **pushed** to the repository (e.g. `v0.10.1`) |
 
 In the GitHub UI, open **Actions** and look for **CI** and **Skillforge release** (not the older “publish to npm” name).
 
@@ -28,14 +28,14 @@ You need the **`NPM_TOKEN`** repository secret.
 
 Create one at [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens) (**Generate New Token** → **Granular Access Token**). Optionally explore [**trusted publishing** (OIDC)](https://docs.npmjs.com/trusted-publishers/) later to avoid long-lived tokens.
 
-1. On `main`, set **`version`** in `package.json` to the version you are releasing (must be **unused** on npm — e.g. `0.10.0`).
+1. On `main`, set **`version`** in `package.json` to the version you are releasing (must be **unused** on npm — e.g. `0.10.1`).
 2. Match **MCP** `serverInfo.version` in `python/app/mcp_server.py` (must equal `package.json`) and add a **`CHANGELOG.md`** section for that version.
 3. Commit and **`git push origin main`**. Wait for **CI** to pass.
 4. Create a tag whose name is **`v` + that exact version**:  
-   `git tag v0.10.0 && git push origin v0.10.0`
+   `git tag v0.10.1 && git push origin v0.10.1`
 5. Open **Actions → Skillforge release**. The job will **fail the version check** if the tag does not match `package.json`.
 6. Confirm on npm: `npm view @heytherevibin/skillforge version`  
-   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.10.0`**) and the `.tgz` asset.
+   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.10.1`**) and the `.tgz` asset.
 
 Scoped packages require a **public** publish; the workflow already runs `npm publish --access public`.
 

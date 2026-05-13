@@ -1,14 +1,14 @@
 # Skillforge
 
 <p align="left">
-  <a href="https://www.npmjs.com/package/@heytherevibin/skillforge"><img src="https://img.shields.io/npm/v/@heytherevibin/skillforge?label=npm&color=blue" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/@heytherevibin/skillforge"><img src="https://img.shields.io/npm/v/@heytherevibin/skillforge?label=npm&color=blue&cacheSeconds=120" alt="npm latest version" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" /></a>
   <a href="https://github.com/heytherevibin/skillforge/actions/workflows/ci.yml"><img src="https://github.com/heytherevibin/skillforge/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
 **Skillforge** is a **local-first orchestration layer** for agent workflows: it maintains a catalog of **`SKILL.md`** documents, **routes** a small subset per task using **embedding-first retrieval**, optional **hybrid** sparse signals and **LLM** stages, optional **project-scoped** policies and notes, and returns **structured context** for downstream models. The **primary integration** is **stdio MCP**; the **CLI** provides parity, operations, and automation hooks.
 
-**Published version:** see **`package.json`** and the npm badge above (they should match after each release). **Change history:** [CHANGELOG.md](CHANGELOG.md). **Product direction:** [STRATEGY.md](STRATEGY.md). **Vulnerability reporting:** [SECURITY.md](SECURITY.md). **Release process:** [RELEASING.md](RELEASING.md).
+**Published version:** The **`latest`** semver on [npm](https://www.npmjs.com/package/@heytherevibin/skillforge) and **`npm view @heytherevibin/skillforge version`** are authoritative—always match the **`version`** in this package’s **`package.json`** and MCP **`serverInfo.version`** for that tarball. The npm badge above reads the same registry field; CDN or browser caches can lag right after a release, so use the version in the page header or the **`npm view`** command if the image looks stale. **Change history:** [CHANGELOG.md](CHANGELOG.md). **Product direction:** [STRATEGY.md](STRATEGY.md). **Vulnerability reporting:** [SECURITY.md](SECURITY.md). **Release process:** [RELEASING.md](RELEASING.md).
 
 ---
 
