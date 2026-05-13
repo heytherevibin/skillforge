@@ -46,7 +46,7 @@ jobs:
 
       - name: Check Python syntax
         run: |
-          for f in python/app/main.py python/app/mcp_server.py python/app/events_cli.py python/app/materialize.py python/app/db_paths.py python/app/route_cli.py python/app/mcp_contract.py python/app/chunking.py python/app/project_index.py python/app/index_cli.py python/app/context_fusion.py python/app/redaction.py python/app/route_policies.py python/app/routing_signals.py; do
+          for f in python/app/main.py python/app/mcp_server.py python/app/events_cli.py python/app/materialize.py python/app/db_paths.py python/app/route_cli.py python/app/mcp_contract.py python/app/chunking.py python/app/project_index.py python/app/index_cli.py python/app/context_fusion.py python/app/redaction.py python/app/route_policies.py python/app/routing_signals.py python/app/route_quality.py python/app/route_eval_harness.py python/app/eval_cli.py python/app/health_cli.py python/app/feedback_meta.py python/app/weights_cli.py; do
             python3 -m py_compile "$f"
           done
 
@@ -55,11 +55,19 @@ jobs:
           pip install -r python/requirements.txt -r python/requirements-dev.txt
           cd python && PYTHONPATH=. pytest tests/ -q
 
+      - name: Skillforge health + route eval (embedding)
+        env:
+          SKILLFORGE_BUNDLED_SKILLS: ${{ github.workspace }}/skills
+        run: |
+          cd python && PYTHONPATH=. python3 -m app.health_cli --quick
+          cd python && PYTHONPATH=. python3 -m app.eval_cli --fixture fixtures/route_eval/smoke.json
+
       - name: Verify skills bundle
         run: |
+          MIN=$(node -e "const j=require('./ci/bundle-gate.json'); if(typeof j.minSkillMdFiles!=='number'||j.minSkillMdFiles<1) process.exit(1); process.stdout.write(String(j.minSkillMdFiles))")
           SKILLS=$(find skills -name 'SKILL.md' -print | wc -l | tr -d ' ')
-          echo "Found $SKILLS SKILL.md files"
-          if [ "$SKILLS" -lt 200 ]; then
-            echo "::error::Expected at least 200 skills, found $SKILLS"
+          echo "Found $SKILLS SKILL.md files (minimum: $MIN from ci/bundle-gate.json)"
+          if [ "$SKILLS" -lt "$MIN" ]; then
+            echo "::error::Expected at least $MIN SKILL.md files per ci/bundle-gate.json, found $SKILLS"
             exit 1
           fi

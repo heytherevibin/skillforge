@@ -21,6 +21,18 @@ Rule shape::
 ``if_text_matches`` is passed to ``re.search`` (``re.DOTALL``). ``include`` is a skill
 name or list of names. Forced skills are appended after router picks until
 ``MAX_ACTIVE_SKILLS`` is reached.
+
+Optional **project routing overlay** (same JSON object):
+
+- ``exclude_skills`` / ``host_exclude`` / ``denylist`` — skill ids excluded from the embedding
+  shortlist (hard filter).
+- ``routing_boosts`` / ``skill_boosts`` — object mapping skill id → numeric delta added to the
+  routing score after learned weights (clamped to ±2).
+- ``project_notes`` / ``routing_notes`` / ``rag_notes`` — free text prepended to the internal
+  routing query when **project_root** is set (stack/context hints for embedding).
+
+``project_notes`` are **not** applied without ``project_root`` to avoid global prompt injection
+from shared policy files.
 """
 from __future__ import annotations
 
@@ -59,6 +71,104 @@ def load_route_policies_config(project_root: str | None) -> dict[str, Any]:
             except (OSError, json.JSONDecodeError):
                 continue
     return {"rules": []}
+
+
+def parse_routing_overlay(
+    policies: dict[str, Any] | None,
+    *,
+    by_name: dict[str, Any] | None = None,
+    audit_out: list[dict[str, Any]] | None = None,
+) -> tuple[frozenset[str], dict[str, float], str]:
+    """Parse exclude list, per-skill score boosts, and project notes from policies dict."""
+    policies = policies or {}
+    by_name = by_name or {}
+    boost_cap = 2.0
+
+    raw_ex = policies.get("exclude_skills") or policies.get("host_exclude") or policies.get("denylist") or []
+    if isinstance(raw_ex, str):
+        raw_ex = [raw_ex]
+    exclude: set[str] = set()
+    if isinstance(raw_ex, list):
+        for x in raw_ex:
+            if not isinstance(x, str) or not x.strip():
+                continue
+            name = x.strip()
+            if by_name and name not in by_name:
+                if audit_out is not None:
+                    audit_out.append({"kind": "exclude", "skill": name, "effect": "unknown_skill"})
+                continue
+            exclude.add(name)
+
+    raw_boost = policies.get("routing_boosts") or policies.get("skill_boosts") or {}
+    boosts: dict[str, float] = {}
+    if isinstance(raw_boost, dict):
+        for k, v in raw_boost.items():
+            if not isinstance(k, str) or not k.strip():
+                continue
+            name = k.strip()
+            if by_name and name not in by_name:
+                if audit_out is not None:
+                    audit_out.append({"kind": "boost", "skill": name, "effect": "unknown_skill"})
+                continue
+            try:
+                b = float(v)
+            except (TypeError, ValueError):
+                if audit_out is not None:
+                    audit_out.append({"kind": "boost", "skill": name, "effect": "invalid_value"})
+                continue
+            boosts[name] = max(-boost_cap, min(boost_cap, b))
+
+    notes = ""
+    for key in ("project_notes", "routing_notes", "rag_notes"):
+        raw = policies.get(key)
+        if isinstance(raw, str) and raw.strip():
+            notes = raw.strip()
+            break
+
+    return frozenset(exclude), boosts, notes
+
+
+def merge_project_notes_into_route_query(
+    route_query: str,
+    notes: str,
+    project_root: str | None,
+    *,
+    max_chars: int | None = None,
+) -> str:
+    """Prefix routing query with project notes when ``project_root`` is set."""
+    notes = (notes or "").strip()
+    pr = (project_root or "").strip()
+    if not notes or not pr:
+        return route_query
+    mc = max_chars
+    if mc is None:
+        mc = int(os.getenv("SKILLFORGE_PROJECT_NOTES_MAX_CHARS", "1200"))
+    mc = max(0, mc)
+    clipped = notes if len(notes) <= mc else notes[: max(0, mc - 1)] + "…"
+    return f"Project routing notes:\n{clipped}\n\n{route_query}"
+
+
+def build_routing_overlay_payload(
+    *,
+    project_root: str,
+    exclude_skills: frozenset[str],
+    routing_boosts: dict[str, float],
+    project_notes_applied: bool,
+    project_notes_len: int,
+    audit: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Telemetry / MCP meta; omit when nothing configured."""
+    if not exclude_skills and not routing_boosts and not project_notes_applied and not audit:
+        return None
+    return {
+        "schema": "routing_overlay/1",
+        "project_root_set": bool((project_root or "").strip()),
+        "exclude_skills": sorted(exclude_skills),
+        "routing_boosts": {k: round(float(v), 4) for k, v in sorted(routing_boosts.items())},
+        "project_notes_applied": project_notes_applied,
+        "project_notes_len": int(project_notes_len),
+        "audit": list(audit),
+    }
 
 
 def merge_policy_includes(

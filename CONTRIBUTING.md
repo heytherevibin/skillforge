@@ -1,38 +1,49 @@
 # Contributing
 
-Thanks for helping improve skillforge.
+Thank you for improving Skillforge.
 
-## How to contribute
+## Workflow
 
-1. **Fork** the repository and create a branch from `main`.
-2. Make focused changes; match existing style in the touched files.
-3. Run local checks before pushing:
+1. **Fork** the repository and create a branch from **`main`**.
+2. Keep changes **focused**; follow patterns in surrounding code.
+3. Run **local checks** before opening a PR from the **package root** (the directory that contains **`package.json`**):
+
    ```bash
    node --check bin/cli.js && node --check lib/packs.js
    npm test
    ```
-4. Open a **pull request** into `main` with a clear description of the change and why.
 
-Pull requests should pass the **CI** workflow (see [RELEASING.md](RELEASING.md)).
+   For Python (after **`pip install -r python/requirements.txt -r python/requirements-dev.txt`** from the same directory):
+
+   ```bash
+   cd python && PYTHONPATH=. pytest tests/ -q
+   ```
+
+   When you add a new **`python/app/*.py`** module, extend the **`py_compile`** list in **`.github/workflows/ci.yml`** (authoritative source) and mirror it in **[RELEASING.md](RELEASING.md)** local checks if you maintain that snippet.
+
+   If you **intentionally** shrink or grow the bundled **`skills/`** tree below/above the current CI minimum, update **`ci/bundle-gate.json`** (`minSkillMdFiles`) and note it in the PR—see **[RELEASING.md](RELEASING.md)**.
+
+4. Open a **pull request** into **`main`** with:
+   - What changed and **why**  
+   - How you **verified** it (tests, manual MCP smoke, etc.)
+
+PRs should pass **CI** (see [RELEASING.md](RELEASING.md)).
 
 ## Branch protection (maintainers)
 
-For an “enterprise-style” mainline, enable in GitHub: **Settings → Branches → Add rule** for `main`:
+For a protected **`main`**:
 
-- Require a pull request before merging
-- Require status checks to pass before merging (add **CI** / `verify`)
-- Optionally: require reviews, disallow force pushes
+- Require PRs before merge  
+- Require **CI** / `verify` to pass  
+- Optionally require reviews and disallow force-push  
 
-This is configured in the GitHub UI; it is not stored in this repo.
+Configured in **GitHub → Settings → Branches**; not stored in-repo.
 
 ## Releases
 
-Maintainers: follow [RELEASING.md](RELEASING.md) for version bumps, tags, **`NPM_TOKEN`**, and npm **2FA**.
+Maintainers: [RELEASING.md](RELEASING.md) (**semver**, tags, **`NPM_TOKEN`**, npm tokens).
 
-## Code of conduct
+## Conduct & security
 
-Please read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Report problems to the maintainers.
-
-## Security
-
-See [SECURITY.md](SECURITY.md) for vulnerability reporting.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)  
+- [SECURITY.md](SECURITY.md) for vulnerability reporting  

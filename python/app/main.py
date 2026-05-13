@@ -32,9 +32,18 @@ from app.project_index import (
     retrieve_project_context_items,
 )
 from app.redaction import redaction_enabled, redact_secret_patterns, sanitize_context_items
-from app.route_policies import load_route_policies_config, merge_policy_includes
+from app.feedback_meta import build_feedback_effect
+from app.route_policies import (
+    build_routing_overlay_payload,
+    load_route_policies_config,
+    merge_policy_includes,
+    merge_project_notes_into_route_query,
+    parse_routing_overlay,
+)
+from app.route_quality import build_route_quality, coerce_route_float
 from app.routing_signals import (
     build_route_query_text,
+    host_pick_shortlist_lines,
     keyword_overlap_scores,
     normalize_minmax,
     skill_routing_card,
@@ -54,7 +63,7 @@ ROUTER_MODEL = os.getenv("SKILLFORGE_ROUTER_MODEL", "claude-haiku-4-5-20251001")
 TOP_K_CANDIDATES = int(os.getenv("SKILLFORGE_TOP_K", "15"))
 MAX_ACTIVE_SKILLS = int(os.getenv("SKILLFORGE_MAX_ACTIVE", "7"))
 REROUTE_THRESHOLD = float(os.getenv("SKILLFORGE_REROUTE_THRESHOLD", "0.4"))
-# "" | "full" | "embedding" — embedding skips Haiku and takes top skills from the shortlist only.
+# "" | "full" | "embedding" | "host" — embedding skips Haiku; host skips in-process pick (MCP must pass picked_names).
 SKILLFORGE_ROUTER_MODE = os.getenv("SKILLFORGE_ROUTER_MODE", "").strip().lower()
 # chunks: RAG-style line-bounded chunks from picked skills. full_body: inject entire SKILL.md per pick (legacy).
 SKILLFORGE_CONTEXT_MODE = os.getenv("SKILLFORGE_CONTEXT_MODE", "chunks").strip().lower()
@@ -105,6 +114,12 @@ def build_router_and_skills(
     if mode == "embedding":
         anthropic = None
         router_note = "embedding-only (SKILLFORGE_ROUTER_MODE=embedding)"
+    elif mode == "host":
+        anthropic = None
+        router_note = (
+            "host-pick (SKILLFORGE_ROUTER_MODE=host): no in-process router LLM; "
+            "first route_skills call returns a shortlist — call again with picked_names"
+        )
     elif mode == "full":
         if key:
             anthropic = AsyncAnthropic()
@@ -446,19 +461,50 @@ class Router:
         fused = self._hybrid_alpha * d_norm + (1.0 - self._hybrid_alpha) * s_norm
         return sims, fused
 
-    def shortlist(self, route_query, con, k=TOP_K_CANDIDATES, user_id=""):
+    def _bias_with_learning_and_overlay(
+        self,
+        con: sqlite3.Connection,
+        biased: np.ndarray,
+        user_id: str,
+        *,
+        exclude_skills: frozenset[str] | None = None,
+        routing_boosts: dict[str, float] | None = None,
+    ) -> None:
+        excl = exclude_skills or frozenset()
+        boosts = routing_boosts or {}
+        for i, s in enumerate(self.skills):
+            w, disabled = get_skill_weight(con, s.name, user_id=user_id)
+            if disabled or s.name in excl:
+                biased[i] = -999.0
+            else:
+                biased[i] += w
+                extra = boosts.get(s.name)
+                if extra is not None:
+                    biased[i] += float(extra)
+
+    def shortlist(
+        self,
+        route_query,
+        con,
+        k=TOP_K_CANDIDATES,
+        user_id="",
+        *,
+        exclude_skills: frozenset[str] | None = None,
+        routing_boosts: dict[str, float] | None = None,
+    ):
         if len(self.skills) == 0:
             return []
         q = self.embed_model.encode(route_query, convert_to_numpy=True)
         q = q / np.linalg.norm(q)
         sims, rank_scores = self._base_routing_scores(route_query, q)
         biased = rank_scores.copy()
-        for i, s in enumerate(self.skills):
-            w, disabled = get_skill_weight(con, s.name, user_id=user_id)
-            if disabled:
-                biased[i] = -999.0
-            else:
-                biased[i] += w
+        self._bias_with_learning_and_overlay(
+            con,
+            biased,
+            user_id,
+            exclude_skills=exclude_skills,
+            routing_boosts=routing_boosts,
+        )
         top_idx = np.argsort(-biased)[:k]
         return [(self.skills[i], float(sims[i])) for i in top_idx if biased[i] > -100]
 
@@ -469,6 +515,8 @@ class Router:
         *,
         k: int | None = None,
         user_id: str = "",
+        exclude_skills: frozenset[str] | None = None,
+        routing_boosts: dict[str, float] | None = None,
     ) -> list[dict[str, Any]]:
         """Embedding shortlist with cosine sim, learned weight, and routing score (no LLM)."""
         limit = k if k is not None else TOP_K_CANDIDATES
@@ -483,12 +531,13 @@ class Router:
             )
         )
         biased = rank_scores.copy()
-        for i, s in enumerate(self.skills):
-            w, disabled = get_skill_weight(con, s.name, user_id=user_id)
-            if disabled:
-                biased[i] = -999.0
-            else:
-                biased[i] += w
+        self._bias_with_learning_and_overlay(
+            con,
+            biased,
+            user_id,
+            exclude_skills=exclude_skills,
+            routing_boosts=routing_boosts,
+        )
         top_idx = np.argsort(-biased)[:limit]
         out: list[dict[str, Any]] = []
         for i in top_idx:
@@ -845,6 +894,26 @@ def format_context_items_markdown(context_items: list[dict[str, Any]]) -> str:
     return "\n".join(blocks)
 
 
+def normalize_host_picked_names(
+    raw: list[str] | None,
+    by_name: dict[str, Skill],
+    cap: int,
+) -> list[str]:
+    """Dedupe, order-stable, cap length; only catalog names."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw or []:
+        if not isinstance(item, str):
+            continue
+        n = item.strip()
+        if n in by_name and n not in seen:
+            out.append(n)
+            seen.add(n)
+        if len(out) >= cap:
+            break
+    return out
+
+
 async def run_route_turn(
     con: sqlite3.Connection,
     router: Router,
@@ -855,21 +924,156 @@ async def run_route_turn(
     *,
     project_root: str | None = None,
     include_project_rag: bool = False,
+    picked_names_from_host: list[str] | None = None,
+    picked_names_from_host_supplied: bool = False,
 ) -> dict[str, Any]:
     """Shared routing + session + telemetry for MCP route_skills and ``skillforge route``.
 
-    Updates sessions, skill usage stats, and writes a route row to events.
+    ``SKILLFORGE_ROUTER_MODE=host`` without ``picked_names`` returns a tight shortlist only (no ``uses``,
+    no skill chunks). Pass ``picked_names`` on the next call to finalize context.
+
+    When ``picked_names_from_host_supplied`` is True, skips rerank/Haiku and uses the supplied names
+    (after validation) in any router mode.
     """
     sid = session_id or str(uuid.uuid4())
     t0 = time.time()
     route_query = build_route_query_text(prompt, conversation)
-    candidates = router.shortlist(route_query, con, user_id=user_id)
-    candidates = await router.rerank_candidates_haiku(route_query, conversation, candidates)
-    picked_names, reasoning = await router.pick_final(
-        prompt, conversation, candidates, route_query=route_query
-    )
     pr = (project_root or "").strip()
     policies_cfg = load_route_policies_config(pr or None)
+    overlay_audit: list[dict[str, Any]] = []
+    exclude_skills, routing_boosts, project_notes_raw = parse_routing_overlay(
+        policies_cfg,
+        by_name=router._by_name,
+        audit_out=overlay_audit,
+    )
+    route_query = merge_project_notes_into_route_query(route_query, project_notes_raw, pr)
+    notes_effective = bool(project_notes_raw.strip() and pr)
+    routing_overlay_meta = build_routing_overlay_payload(
+        project_root=pr,
+        exclude_skills=exclude_skills,
+        routing_boosts=routing_boosts,
+        project_notes_applied=notes_effective,
+        project_notes_len=len(project_notes_raw) if project_notes_raw else 0,
+        audit=overlay_audit,
+    )
+    rules_list_early = policies_cfg.get("rules") if isinstance(policies_cfg.get("rules"), list) else []
+    rules_n = len(rules_list_early)
+
+    host_router = SKILLFORGE_ROUTER_MODE == "host"
+
+    if host_router and not picked_names_from_host_supplied:
+        k = max(3, min(TOP_K_CANDIDATES, int(os.getenv("SKILLFORGE_HOST_PICK_MAX", "12"))))
+        facets = router.shortlist_with_facets(
+            route_query,
+            con,
+            k=k,
+            user_id=user_id,
+            exclude_skills=exclude_skills,
+            routing_boosts=routing_boosts,
+        )
+        candidates = [
+            (router._by_name[nm], coerce_route_float(f.get("cosine_similarity")))
+            for f in facets
+            if (nm := f.get("name")) in router._by_name
+        ]
+        md, rows = host_pick_shortlist_lines(
+            prompt=prompt,
+            route_query=route_query,
+            facet_rows=facets,
+            max_candidates=k,
+        )
+        route_ms = (time.time() - t0) * 1000
+        safe_prompt_snip = prompt[:300]
+        if redaction_enabled():
+            safe_prompt_snip, _ = redact_secret_patterns(prompt[:300])
+        route_quality = build_route_quality(
+            facet_list=facets,
+            router_mode=SKILLFORGE_ROUTER_MODE or "auto",
+            router_hybrid=router._hybrid_mode,
+            picked_names=[],
+            rerouted=False,
+            change=0.0,
+            policy_rules_loaded=rules_n,
+            policy_audit=[],
+            host_picked=False,
+            host_shortlist_only=True,
+            haiku_rerank_applied=False,
+            pick_path="host_shortlist",
+        )
+        feedback_effect = build_feedback_effect(con, [], user_id=user_id)
+        event = {
+            "type": "host_shortlist",
+            "session_id": sid,
+            "user_id": user_id,
+            "prompt": safe_prompt_snip,
+            "candidates": [{"name": s.name, "score": sc} for s, sc in candidates[:15]],
+            "picked": [],
+            "reasoning": "host_pick_shortlist",
+            "route_ms": round(route_ms, 1),
+            "ts": time.time(),
+            "host_pick_candidates": rows,
+            "policy": {"rules_loaded": rules_n, "audit": []},
+            "route_quality": route_quality,
+            "feedback_effect": feedback_effect,
+        }
+        if routing_overlay_meta is not None:
+            event["routing_overlay"] = routing_overlay_meta
+        log_event(con, sid, "host_shortlist", event, user_id=user_id)
+        con.commit()
+        ret_host: dict[str, Any] = {
+            "session_id": sid,
+            "picked_names": [],
+            "reasoning": (
+                "host_pick_shortlist — choose names from the list; call route_skills again "
+                "with picked_names (reuse session_id if you use sessions)."
+            ),
+            "candidates": candidates,
+            "route_ms": route_ms,
+            "rerouted": False,
+            "change": 0.0,
+            "event": event,
+            "context_items": [],
+            "host_pick_shortlist": True,
+            "host_pick_markdown": md,
+            "host_pick_candidates": rows,
+            "route_query": route_query,
+            "route_quality": route_quality,
+            "feedback_effect": feedback_effect,
+        }
+        if routing_overlay_meta is not None:
+            ret_host["routing_overlay"] = routing_overlay_meta
+        return ret_host
+
+    facet_list = router.shortlist_with_facets(
+        route_query,
+        con,
+        k=TOP_K_CANDIDATES,
+        user_id=user_id,
+        exclude_skills=exclude_skills,
+        routing_boosts=routing_boosts,
+    )
+    candidates = [
+        (router._by_name[nm], coerce_route_float(f.get("cosine_similarity")))
+        for f in facet_list
+        if (nm := f.get("name")) in router._by_name
+    ]
+    haiku_rerank_applied = False
+    if picked_names_from_host_supplied:
+        picked_names = normalize_host_picked_names(
+            picked_names_from_host, router._by_name, MAX_ACTIVE_SKILLS
+        )
+        reasoning = "host-picked: MCP picked_names"
+    else:
+        names_before = [s.name for s, _ in candidates]
+        rerank_eligible = bool(
+            candidates and router.anthropic is not None and _env_truthy("SKILLFORGE_HAIKU_RERANK", "0")
+        )
+        candidates = await router.rerank_candidates_haiku(route_query, conversation, candidates)
+        names_after = [s.name for s, _ in candidates]
+        haiku_rerank_applied = rerank_eligible and names_before != names_after
+        picked_names, reasoning = await router.pick_final(
+            prompt, conversation, candidates, route_query=route_query
+        )
     picked_names, policy_audit = merge_policy_includes(
         prompt,
         picked_names,
@@ -984,6 +1188,29 @@ async def run_route_turn(
 
     project_rag_items_count = sum(1 for c in context_items if c.get("path"))
 
+    if picked_names_from_host_supplied:
+        pick_path = "host_picked"
+    elif router.anthropic is None or SKILLFORGE_ROUTER_MODE == "embedding":
+        pick_path = "embedding_top"
+    else:
+        pick_path = "haiku_pick"
+
+    rules_list = policies_cfg.get("rules") if isinstance(policies_cfg.get("rules"), list) else []
+    route_quality = build_route_quality(
+        facet_list=facet_list,
+        router_mode=SKILLFORGE_ROUTER_MODE or "auto",
+        router_hybrid=router._hybrid_mode,
+        picked_names=picked_names,
+        rerouted=rerouted,
+        change=change,
+        policy_rules_loaded=len(rules_list),
+        policy_audit=policy_audit,
+        host_picked=picked_names_from_host_supplied,
+        host_shortlist_only=False,
+        haiku_rerank_applied=haiku_rerank_applied,
+        pick_path=pick_path,
+    )
+
     reasoning_out = reasoning
     safe_prompt_snip = prompt[:300]
     context_redaction_stats: dict[str, Any] = {"enabled": False, "secret_hits": 0, "path_hits": 0}
@@ -1002,6 +1229,8 @@ async def run_route_turn(
     con.commit()
     for n in picked_names:
         update_skill_stat(con, n, "uses", 1, user_id=user_id)
+
+    feedback_effect = build_feedback_effect(con, picked_names, user_id=user_id)
 
     event = {
         "type": "route",
@@ -1035,9 +1264,14 @@ async def run_route_turn(
             }
             for c in context_items[:24]
         ],
+        "host_picked": bool(picked_names_from_host_supplied),
+        "route_quality": route_quality,
+        "feedback_effect": feedback_effect,
     }
+    if routing_overlay_meta is not None:
+        event["routing_overlay"] = routing_overlay_meta
     log_event(con, sid, "route", event, user_id=user_id)
-    return {
+    ret_main: dict[str, Any] = {
         "session_id": sid,
         "picked_names": picked_names,
         "reasoning": reasoning_out,
@@ -1047,4 +1281,9 @@ async def run_route_turn(
         "change": change,
         "event": event,
         "context_items": context_items,
+        "route_quality": route_quality,
+        "feedback_effect": feedback_effect,
     }
+    if routing_overlay_meta is not None:
+        ret_main["routing_overlay"] = routing_overlay_meta
+    return ret_main

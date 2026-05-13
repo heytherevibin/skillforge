@@ -27,6 +27,7 @@ from app.db_paths import resolve_orchestrator_db
 from app.main import (
     TOP_K_CANDIDATES,
     MAX_ACTIVE_SKILLS,
+    SKILLFORGE_ROUTER_MODE,
     build_router_and_skills,
     format_context_items_markdown,
     init_db,
@@ -41,7 +42,13 @@ from app.main import (
 from app.materialize import materialize_project_files
 from app.mcp_contract import MCP_RESPONSE_SCHEMA_VERSION, build_route_skills_meta
 from app.redaction import redaction_enabled, redact_display_path
-from app.route_policies import load_route_policies_config, merge_policy_includes
+from app.route_policies import (
+    build_routing_overlay_payload,
+    load_route_policies_config,
+    merge_policy_includes,
+    merge_project_notes_into_route_query,
+    parse_routing_overlay,
+)
 from app.routing_signals import build_route_query_text
 
 
@@ -189,7 +196,7 @@ class MCPServer:
         return {
             "protocolVersion": "2024-11-05",
             "capabilities": caps,
-            "serverInfo": {"name": "skillforge", "version": "0.7.1"},
+            "serverInfo": {"name": "skillforge", "version": "0.10.0"},
         }
 
     def handle_tools_list(self, params):
@@ -198,20 +205,25 @@ class MCPServer:
                 {
                     "name": "route_skills",
                     "description": (
-                        "Route the user's prompt to the most relevant skills from the catalog "
-                        "and return SKILL.md context (full body or RAG chunks per CONTEXT_MODE). "
-                        "Returns up to 7 skills. "
-                        "Pass project_root for per-repo SQLite in .skillforge/ and learning. "
-                        "Optional include_project_rag merges top chunks from `skillforge index` into context. "
-                        "On success, _meta includes schema_version ("
-                        f"{MCP_RESPONSE_SCHEMA_VERSION}), sources[] (kind skill or file), "
-                        "budget (chars_skill_bodies, chars_project_chunks), fusion (MMR when combined index+RAG), "
-                        "candidates_preview, context_items_count."
+                        "Two-step when SKILLFORGE_ROUTER_MODE=host (no in-process router LLM): (1) call with prompt "
+                        "only — returns a tight numbered shortlist + session_id; (2) call again with the same prompt "
+                        "and picked_names (JSON array of exact catalog ids from the list) to load SKILL.md chunks. "
+                        "With auto router modes, one call returns context. Optional conversation, project_root, "
+                        "include_project_rag. picked_names may also be passed in embedding/full mode to skip "
+                        "auto-pick and use the host-provided list."
                     ),
                     "inputSchema": {
                         "type": "object",
                         "properties": {
                             "prompt": {"type": "string", "description": "The user's prompt or task description"},
+                            "picked_names": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "Host-chosen skill ids from the shortlist (same prompt as step 1). "
+                                    "Omit on first host-mode call; required for finalize after shortlist."
+                                ),
+                            },
                             "project_root": {
                                 "type": "string",
                                 "description": "Repo/workspace root — stores orchestrator state in .skillforge/",
@@ -375,6 +387,8 @@ class MCPServer:
                     "name": "materialize_project",
                     "description": (
                         "Write project-local Skillforge files: .cursor/rules/skillforge.mdc, "
+                        ".cursor/commands/skillforge.md (Cursor /skillforge), "
+                        ".claude/commands/skillforge.md (Claude Code /skillforge), "
                         "docs/SKILLFORGE-PRD.md, and a CLAUDE.md section. "
                         "Pass project_root (workspace path) and skill_names from route_skills. "
                         "Hosts must supply project_root; MCP does not infer cwd."
@@ -390,7 +404,11 @@ class MCPServer:
                             },
                             "merge": {
                                 "type": "boolean",
-                                "description": "If false and .cursor/rules/skillforge.mdc exists, skip overwriting that file",
+                                "description": (
+                                "If false and .cursor/rules/skillforge.mdc, "
+                                ".cursor/commands/skillforge.md, or "
+                                ".claude/commands/skillforge.md exists, skip overwriting those files"
+                                ),
                                 "default": True,
                             },
                         },
@@ -474,6 +492,16 @@ class MCPServer:
                 ),
             }
 
+        picked_names_from_host_supplied = "picked_names" in args
+        if picked_names_from_host_supplied:
+            raw_pn = args.get("picked_names")
+            if isinstance(raw_pn, list):
+                picked_names_from_host = [str(x) for x in raw_pn if x is not None]
+            else:
+                picked_names_from_host = []
+        else:
+            picked_names_from_host = None
+
         con = self._get_con(args)
         result = await run_route_turn(
             con,
@@ -484,6 +512,8 @@ class MCPServer:
             session_id=session_id,
             project_root=pr,
             include_project_rag=self._include_project_rag_from_args(args),
+            picked_names_from_host=picked_names_from_host,
+            picked_names_from_host_supplied=picked_names_from_host_supplied,
         )
         picked_names = result["picked_names"]
         reasoning = result["reasoning"]
@@ -503,22 +533,29 @@ class MCPServer:
                     "context_mode": self.router.context_mode,
                     "context_items_count": len(context_items),
                     "project_rag_items_count": (result.get("event") or {}).get("project_rag_items_count", 0),
+                    "host_pick_shortlist": bool(result.get("host_pick_shortlist")),
                 }
                 (d / "last_route.json").write_text(json.dumps(snap, indent=2), encoding="utf-8")
             except OSError:
                 pass
 
         db_disp = redact_display_path(db_path) if redaction_enabled() else str(db_path)
-        blocks = [
-            f"# Skillforge — routed {len(picked_names)} skill(s); context=`{self.router.context_mode}`",
-            f"_DB:_ `{db_disp}`",
-            f"_Reasoning: {reasoning}_" if reasoning else "",
-            "",
-        ]
-        if context_items:
-            blocks.append(format_context_items_markdown(context_items))
-        elif not picked_names:
-            blocks.append("_No skills matched this prompt closely enough to load._")
+        if result.get("host_pick_shortlist"):
+            response_text = (result.get("host_pick_markdown") or "").strip() + (
+                f"\n\n---\n_session_id:_ `{result['session_id']}` · _orchestrator:_ `{db_disp}`"
+            )
+            blocks = [response_text]
+        else:
+            blocks = [
+                f"# Skillforge — routed {len(picked_names)} skill(s); context=`{self.router.context_mode}`",
+                f"_DB:_ `{db_disp}`",
+                f"_Reasoning: {reasoning}_" if reasoning else "",
+                "",
+            ]
+            if context_items:
+                blocks.append(format_context_items_markdown(context_items))
+            elif not picked_names:
+                blocks.append("_No skills matched this prompt closely enough to load._")
         response_text = "\n".join(b for b in blocks if b is not None)
         meta = build_route_skills_meta(
             result=result,
@@ -531,6 +568,9 @@ class MCPServer:
             fusion=(result.get("event") or {}).get("context_fusion"),
             context_redaction=(result.get("event") or {}).get("context_redaction"),
         )
+        if result.get("host_pick_shortlist"):
+            meta["host_pick_shortlist"] = True
+            meta["host_pick_candidates"] = result.get("host_pick_candidates") or []
         return {
             "content": [{"type": "text", "text": response_text}],
             "_meta": meta,
@@ -552,7 +592,22 @@ class MCPServer:
             limit = TOP_K_CANDIDATES
         limit = max(1, min(limit, 50))
         con = self._get_con(args)
-        facets = self.router.shortlist_with_facets(query, con, k=limit, user_id=user_id)
+        policies_cfg = load_route_policies_config(pr)
+        overlay_audit = []
+        exclude_skills, routing_boosts, project_notes = parse_routing_overlay(
+            policies_cfg,
+            by_name=self.router._by_name,
+            audit_out=overlay_audit,
+        )
+        q2 = merge_project_notes_into_route_query(query, project_notes, pr)
+        facets = self.router.shortlist_with_facets(
+            q2,
+            con,
+            k=limit,
+            user_id=user_id,
+            exclude_skills=exclude_skills,
+            routing_boosts=routing_boosts,
+        )
         lines = ["# search_skills — embedding shortlist", ""]
         for f in facets:
             lines.append(
@@ -588,14 +643,38 @@ class MCPServer:
             limit = TOP_K_CANDIDATES
         limit = max(1, min(limit, 50))
         con = self._get_con(args)
-        route_query = build_route_query_text(prompt, conversation)
-        facets = self.router.shortlist_with_facets(route_query, con, k=limit, user_id=user_id)
-        candidates = self.router.shortlist(route_query, con, user_id=user_id)
+        policies_cfg = load_route_policies_config(pr)
+        overlay_audit = []
+        exclude_skills, routing_boosts, project_notes = parse_routing_overlay(
+            policies_cfg,
+            by_name=self.router._by_name,
+            audit_out=overlay_audit,
+        )
+        route_query = merge_project_notes_into_route_query(
+            build_route_query_text(prompt, conversation),
+            project_notes,
+            pr,
+        )
+        facets = self.router.shortlist_with_facets(
+            route_query,
+            con,
+            k=limit,
+            user_id=user_id,
+            exclude_skills=exclude_skills,
+            routing_boosts=routing_boosts,
+        )
+        candidates = self.router.shortlist(
+            route_query,
+            con,
+            limit,
+            user_id,
+            exclude_skills=exclude_skills,
+            routing_boosts=routing_boosts,
+        )
         candidates = await self.router.rerank_candidates_haiku(route_query, conversation, candidates)
         picked, reasoning = await self.router.pick_final(
             prompt, conversation, candidates, route_query=route_query
         )
-        policies_cfg = load_route_policies_config(pr)
         merged, policy_audit = merge_policy_includes(
             prompt,
             list(picked),
@@ -606,6 +685,15 @@ class MCPServer:
             max_active=MAX_ACTIVE_SKILLS,
         )
         router_mode = "full" if self.router.anthropic else "embedding-only"
+        notes_effective = bool(project_notes.strip() and (pr or "").strip())
+        routing_ov = build_routing_overlay_payload(
+            project_root=pr or "",
+            exclude_skills=exclude_skills,
+            routing_boosts=routing_boosts,
+            project_notes_applied=notes_effective,
+            project_notes_len=len(project_notes) if project_notes else 0,
+            audit=overlay_audit,
+        )
         explain = {
             "schema_version": MCP_RESPONSE_SCHEMA_VERSION,
             "tool": "explain_route",
@@ -622,6 +710,8 @@ class MCPServer:
                 "audit": policy_audit,
             },
         }
+        if routing_ov is not None:
+            explain["routing_overlay"] = routing_ov
         lines = [
             "# explain_route — routing diagnostics (no DB writes)",
             "",
@@ -773,6 +863,13 @@ class MCPServer:
         session_id = args.get("session_id") or None
         user_id = self._mcp_user_id(args)
         merge = args.get("merge", True)
+        if SKILLFORGE_ROUTER_MODE == "host":
+            msg = (
+                "skillforge_bootstrap does not support SKILLFORGE_ROUTER_MODE=host (two-step routing). "
+                "Set SKILLFORGE_ROUTER_MODE=embedding for one-shot bootstrap, or call route_skills twice "
+                "(shortlist then picked_names) and materialize_project yourself."
+            )
+            return {"content": [{"type": "text", "text": msg}], "isError": True}
         if not prompt.strip():
             return {"content": [{"type": "text", "text": "No prompt provided."}], "isError": True}
         if not root:

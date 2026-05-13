@@ -1,0 +1,4 @@
+{
+  "description": "CI gate for the vendored skills tree: at least this many SKILL.md files must be present under skills/. Bump minSkillMdFiles only when intentionally changing bundle size policy.",
+  "minSkillMdFiles": 200
+}

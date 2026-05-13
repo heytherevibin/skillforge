@@ -7,6 +7,8 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from app.route_quality import coerce_route_float
+
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_\-./]{2,}", re.I)
 
 
@@ -93,3 +95,61 @@ def keyword_overlap_scores(route_query: str, skill_cards: list[str]) -> np.ndarr
         ct = set(tokenize_skills_query(card))
         out.append(float(len(qt & ct)))
     return np.array(out, dtype=np.float64)
+
+
+def host_pick_shortlist_lines(
+    *,
+    prompt: str,
+    route_query: str,
+    facet_rows: list[dict[str, Any]],
+    max_candidates: int | None = None,
+    line_chars: int | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Tight numbered list + structured rows for MCP host-pick phase (no in-process LLM)."""
+    mc = max_candidates
+    if mc is None:
+        mc = max(3, int(os.getenv("SKILLFORGE_HOST_PICK_MAX", "12")))
+    lc = line_chars if line_chars is not None else int(os.getenv("SKILLFORGE_HOST_PICK_LINE_CHARS", "120"))
+    prompt_one = (prompt or "").strip().replace("\n", " ")
+    if len(prompt_one) > 160:
+        prompt_one = prompt_one[:157] + "…"
+    rows_out: list[dict[str, Any]] = []
+    lines: list[str] = [
+        "# Host pick — choose skill names only from this list",
+        "",
+        f"Task: {prompt_one}",
+        "",
+        "Reply with JSON only:",
+        '{"picked": ["exact-skill-id", ...], "reasoning": "one line"}',
+        f"Use 0–{mc} names from the numbered lines only (empty picked is allowed). Copy names exactly.",
+        "",
+        "```",
+    ]
+    for i, f in enumerate(facet_rows[:mc], start=1):
+        name = str(f.get("name") or "")
+        cos = coerce_route_float(f.get("cosine_similarity"))
+        card = f"{f.get('title') or name}: {(f.get('description_preview') or '')[:lc]}".replace("\n", " ").strip()
+        if len(card) > lc:
+            card = card[: lc - 1] + "…"
+        line = f"{i:>2}. {name} | cos={cos:.3f} | {card}"
+        lines.append(line)
+        rows_out.append({
+            "id": name,
+            "rank": i,
+            "name": name,
+            "cosine_similarity": round(cos, 6),
+            "routing_score": f.get("routing_score"),
+            "sparse_signal": f.get("sparse_signal"),
+            "learned_weight": f.get("learned_weight"),
+            "router_hybrid": f.get("router_hybrid"),
+            "source": f.get("source"),
+            "one_liner": card,
+            "rationale_one_liner": card,
+        })
+    lines.append("```")
+    rq = (route_query or "").strip()
+    if len(rq) > 400:
+        rq = rq[:397] + "…"
+    if rq:
+        lines.extend(["", f"_Retrieval query:_ {rq}"])
+    return "\n".join(lines), rows_out

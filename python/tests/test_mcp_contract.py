@@ -135,3 +135,120 @@ def test_build_route_skills_meta_error_field() -> None:
     )
     assert meta["error"] == "empty_prompt"
     assert meta["sources"] == []
+
+
+def test_build_route_skills_meta_includes_route_quality() -> None:
+    rq = {"schema": "route_quality/1", "picked_count": 1}
+    meta = build_route_skills_meta(
+        result={
+            "candidates": [],
+            "session_id": "s",
+            "rerouted": False,
+            "change": 0.0,
+            "route_ms": 1.0,
+            "route_quality": rq,
+        },
+        picked_names=[],
+        user_id="u",
+        db_path="db.sqlite",
+        skills_map={},
+        response_text="x",
+    )
+    assert meta.get("route_quality") == rq
+
+
+def test_build_route_skills_meta_ignores_non_dict_route_quality() -> None:
+    meta = build_route_skills_meta(
+        result={
+            "candidates": [],
+            "session_id": "s",
+            "rerouted": False,
+            "change": 0.0,
+            "route_ms": 1.0,
+            "route_quality": "not-a-dict",
+        },
+        picked_names=[],
+        user_id="u",
+        db_path="db.sqlite",
+        skills_map={},
+        response_text="x",
+    )
+    assert "route_quality" not in meta
+
+
+def test_build_route_skills_meta_includes_feedback_effect() -> None:
+    fb = {"schema": "feedback_effect/1", "picked": []}
+    meta = build_route_skills_meta(
+        result={
+            "candidates": [],
+            "session_id": "s",
+            "rerouted": False,
+            "change": 0.0,
+            "route_ms": 1.0,
+            "feedback_effect": fb,
+        },
+        picked_names=[],
+        user_id="u",
+        db_path="db.sqlite",
+        skills_map={},
+        response_text="x",
+    )
+    assert meta.get("feedback_effect") == fb
+
+
+def test_build_route_skills_meta_ignores_non_dict_feedback_effect() -> None:
+    meta = build_route_skills_meta(
+        result={
+            "candidates": [],
+            "session_id": "s",
+            "rerouted": False,
+            "change": 0.0,
+            "route_ms": 1.0,
+            "feedback_effect": [1, 2],
+        },
+        picked_names=[],
+        user_id="u",
+        db_path="db.sqlite",
+        skills_map={},
+        response_text="x",
+    )
+    assert "feedback_effect" not in meta
+
+
+def test_build_route_skills_meta_includes_routing_overlay() -> None:
+    ro = {"schema": "routing_overlay/1", "exclude_skills": ["x"]}
+    meta = build_route_skills_meta(
+        result={
+            "candidates": [],
+            "session_id": "s",
+            "rerouted": False,
+            "change": 0.0,
+            "route_ms": 1.0,
+            "routing_overlay": ro,
+        },
+        picked_names=[],
+        user_id="u",
+        db_path="db.sqlite",
+        skills_map={},
+        response_text="x",
+    )
+    assert meta.get("routing_overlay") == ro
+
+
+def test_build_route_skills_meta_ignores_non_dict_routing_overlay() -> None:
+    meta = build_route_skills_meta(
+        result={
+            "candidates": [],
+            "session_id": "s",
+            "rerouted": False,
+            "change": 0.0,
+            "route_ms": 1.0,
+            "routing_overlay": "bad",
+        },
+        picked_names=[],
+        user_id="u",
+        db_path="db.sqlite",
+        skills_map={},
+        response_text="x",
+    )
+    assert "routing_overlay" not in meta

@@ -5,7 +5,7 @@
 | Workflow | File | When it runs |
 |----------|------|----------------|
 | **CI** | [.github/workflows/ci.yml](.github/workflows/ci.yml) | Every **push** and **pull request** to `main`; also **`workflow_dispatch`** (run manually from the Actions tab) |
-| **Skillforge release** | [.github/workflows/release.yml](.github/workflows/release.yml) | When a **`v*`** tag is **pushed** to the repository (e.g. `v0.2.1`) |
+| **Skillforge release** | [.github/workflows/release.yml](.github/workflows/release.yml) | When a **`v*`** tag is **pushed** to the repository (e.g. `v0.10.0`) |
 
 In the GitHub UI, open **Actions** and look for **CI** and **Skillforge release** (not the older “publish to npm” name).
 
@@ -28,14 +28,14 @@ You need the **`NPM_TOKEN`** repository secret.
 
 Create one at [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens) (**Generate New Token** → **Granular Access Token**). Optionally explore [**trusted publishing** (OIDC)](https://docs.npmjs.com/trusted-publishers/) later to avoid long-lived tokens.
 
-1. On `main`, set **`version`** in `package.json` to the version you are releasing (must be **unused** on npm — e.g. `0.2.1`).
-2. Match **MCP** `serverInfo.version` in `python/app/mcp_server.py` and add a **`CHANGELOG.md`** section for that version.
+1. On `main`, set **`version`** in `package.json` to the version you are releasing (must be **unused** on npm — e.g. `0.10.0`).
+2. Match **MCP** `serverInfo.version` in `python/app/mcp_server.py` (must equal `package.json`) and add a **`CHANGELOG.md`** section for that version.
 3. Commit and **`git push origin main`**. Wait for **CI** to pass.
 4. Create a tag whose name is **`v` + that exact version**:  
-   `git tag v0.2.1 && git push origin v0.2.1`
+   `git tag v0.10.0 && git push origin v0.10.0`
 5. Open **Actions → Skillforge release**. The job will **fail the version check** if the tag does not match `package.json`.
 6. Confirm on npm: `npm view @heytherevibin/skillforge version`  
-   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.2.1`**) and the `.tgz` asset.
+   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.10.0`**) and the `.tgz` asset.
 
 Scoped packages require a **public** publish; the workflow already runs `npm publish --access public`.
 
@@ -67,6 +67,10 @@ Typical causes: the tag was created before **Skillforge release** existed on `ma
 1. Bump `version` in `package.json`, commit, push `main`.
 2. Push a **new** tag: `v` + new version.
 
+## Bundled skills gate
+
+The **minimum** number of **`skills/**/**/SKILL.md`** files required in CI is **`ci/bundle-gate.json`** → **`minSkillMdFiles`**. Change that value when your distribution policy for the vendored catalog changes (do not edit the number inline in **`ci.yml`**).
+
 ## Local sanity checks (before push)
 
 ```bash
@@ -74,10 +78,18 @@ node --check bin/cli.js && node --check lib/packs.js
 npm test
 ```
 
-Python (syntax only):
+Python (syntax only)—the **authoritative** module list is in **`.github/workflows/ci.yml`** (step “Check Python syntax”). Example:
 
 ```bash
-for f in python/app/main.py python/app/mcp_server.py python/app/events_cli.py python/app/materialize.py python/app/db_paths.py python/app/route_cli.py python/app/mcp_contract.py python/app/chunking.py python/app/project_index.py python/app/index_cli.py python/app/context_fusion.py python/app/redaction.py python/app/route_policies.py python/app/routing_signals.py; do python3 -m py_compile "$f"; done
+for f in \
+  python/app/main.py python/app/mcp_server.py python/app/events_cli.py python/app/materialize.py \
+  python/app/db_paths.py python/app/route_cli.py python/app/mcp_contract.py python/app/chunking.py \
+  python/app/project_index.py python/app/index_cli.py python/app/context_fusion.py python/app/redaction.py \
+  python/app/route_policies.py python/app/routing_signals.py python/app/route_quality.py \
+  python/app/route_eval_harness.py python/app/eval_cli.py python/app/health_cli.py \
+  python/app/feedback_meta.py python/app/weights_cli.py; do
+  python3 -m py_compile "$f"
+done
 ```
 
 ## Troubleshooting: `EOTP` / one-time password in CI

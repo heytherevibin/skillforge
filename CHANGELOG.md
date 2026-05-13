@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.0
+
+- **CI:** Minimum bundled **`SKILL.md`** count is configured via **`ci/bundle-gate.json`** (`minSkillMdFiles`); **`.github/workflows/ci.yml`** reads that file. The **`ci/`** directory is included in the published package **`files`** list for transparency.
+- **MCP `_meta`:** **`schema_version` 1.7** — optional **`routing_overlay`** (project exclude / boost / notes audit). **1.6** — optional **`feedback_effect`** (learned-weight transparency after each route). **1.5** — optional **`route_quality`** (shortlist, hybrid, policy/session signals). Implemented in **`app/mcp_contract.py`** (see constant **`MCP_RESPONSE_SCHEMA_VERSION`**).
+- **Project routing overlay:** optional **`exclude_skills`**, **`routing_boosts`**, **`project_notes`** (and aliases) in the same JSON document as regex **`rules`** — parsed by **`app/route_policies.py`**, applied in **`Router`** shortlists; **`project_notes`** require **`project_root`** to apply.
+- **Operator CLIs:** **`skillforge health`** (`python/app/health_cli.py`), **`skillforge route-eval`** (`eval_cli` + fixtures under **`python/fixtures/route_eval/`**), **`skillforge weights export|import`** (`weights_cli.py`). CI runs **health --quick** and embedding **route-eval** with **`SKILLFORGE_BUNDLED_SKILLS`** set to the workspace skills tree.
+- **MCP / search & explain:** **`search_skills`** and **`explain_route`** honor the same overlay + notes as **`route_skills`**; **`explain_route`** passes explicit shortlist **`k`** into **`Router.shortlist`**.
+- **Fix:** **`skillforge route`** defines **`db_disp`** before use in host-pick output (**`route_cli.py`**).
+
+## 0.9.0
+
+- **Host-delegated routing:** set **`SKILLFORGE_ROUTER_MODE=host`** to skip the in-process Haiku pick. First **`route_skills`** call returns a tight numbered shortlist (markdown + **`_meta.host_pick_candidates`**); second call with **`picked_names`** loads context, policies, and session **`uses`** as usual. No **`ANTHROPIC_API_KEY`** required for the pick step. Tunables: **`SKILLFORGE_HOST_PICK_MAX`**, **`SKILLFORGE_HOST_PICK_LINE_CHARS`**.
+- **`picked_names`** on **`route_skills`** (optional): in **`embedding`** / **`full`** modes, supplying **`picked_names`** skips auto-pick and uses the host list (unchanged behavior, now documented).
+- **`skillforge_bootstrap`** returns an error when **`SKILLFORGE_ROUTER_MODE=host`** (use two-step **`route_skills`** + **`materialize_project`**).
+- **CLI:** **`skillforge route --picked-names=a,b`** mirrors MCP finalize. **`--json-meta`** includes **`host_pick_shortlist`** when applicable.
+- **Cursor (global `/skillforge`)** and **Claude Code**: on **`skillforge install`** / first-run setup, Skillforge writes **`~/.cursor/commands/skillforge.md`** and/or **`~/.claude/commands/skillforge.md`** when each environment is detected; **`skillforge hosts init`** updates both without Python setup. Opt out: **`SKILLFORGE_SKIP_CURSOR_SETUP`**, **`SKILLFORGE_SKIP_CLAUDE_CODE_SETUP`**. Force: **`SKILLFORGE_CURSOR_GLOBAL_COMMAND`**, **`SKILLFORGE_CLAUDE_CODE_GLOBAL_COMMAND`**. **`--force-cursor`** replaces managed files. **Claude Desktop** remains detect-only + MCP merge hint.
+- **MCP** server version **0.9.0**; **`materialize_project`** writes per-repo **`.cursor/commands`** and **`.claude/commands`** **`/skillforge`** with **`skill_names`**.
+
 ## 0.8.0
 
 - **Smarter routing:** optional **conversation-aware** shortlist query (`SKILLFORGE_ROUTER_CONV_*`), **hybrid** retrieval (`SKILLFORGE_ROUTER_HYBRID` = `keyword` or `bm25` + `SKILLFORGE_ROUTER_HYBRID_ALPHA`), optional **Haiku rerank** (`SKILLFORGE_HAIKU_RERANK`, `SKILLFORGE_HAIKU_RERANK_MAX`, `SKILLFORGE_HAIKU_RERANK_MODEL`).

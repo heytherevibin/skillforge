@@ -7,6 +7,7 @@ import pytest
 from app.main import Skill, parse_skill_md
 from app.routing_signals import (
     build_route_query_text,
+    host_pick_shortlist_lines,
     keyword_overlap_scores,
     normalize_minmax,
     skill_routing_card,
@@ -61,6 +62,40 @@ def test_keyword_overlap_scores() -> None:
     q = "beta search"
     sc = keyword_overlap_scores(q, cards)
     assert sc[0] > sc[1]
+
+
+def test_host_pick_shortlist_lines_basic() -> None:
+    facets = [
+        {
+            "name": "alpha-skill",
+            "title": "Alpha",
+            "cosine_similarity": 0.42,
+            "description_preview": "Does alpha testing patterns for flaky CI.",
+        }
+    ]
+    md, rows = host_pick_shortlist_lines(
+        prompt="fix flaky tests",
+        route_query="fix flaky tests",
+        facet_rows=facets,
+        max_candidates=5,
+        line_chars=90,
+    )
+    assert "alpha-skill" in md
+    assert "fix flaky" in md
+    assert len(rows) == 1
+    assert rows[0]["name"] == "alpha-skill"
+    assert rows[0]["id"] == "alpha-skill"
+    assert rows[0]["rank"] == 1
+
+
+def test_normalize_host_picked_main() -> None:
+    from app.main import Skill, normalize_host_picked_names
+
+    a = Skill(name="a", title="A", description="", body="", source="bundled")
+    b = Skill(name="b", title="B", description="", body="", source="bundled")
+    by_name = {"a": a, "b": b}
+    assert normalize_host_picked_names(["b", "a", "b", "unknown"], by_name, 1) == ["b"]
+    assert normalize_host_picked_names([], by_name, 7) == []
 
 
 def test_parse_skill_triggers(tmp_path) -> None:

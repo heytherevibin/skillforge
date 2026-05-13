@@ -34,6 +34,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     p.add_argument("--session-id", default="", help="Stable session id (reuse across turns for reroute stats).")
     p.add_argument("--user-id", default="", help="Logical user id for weights/sessions/events.")
+    p.add_argument(
+        "--picked-names",
+        default="",
+        help="Comma-separated catalog skill ids (host pick). Skips auto router/Haiku; same as MCP picked_names.",
+    )
     p.add_argument("--json-meta", action="store_true", help="Print routing metadata as JSON on stderr after output.")
     p.add_argument(
         "--include-project-rag",
@@ -55,10 +60,15 @@ async def _run(args: argparse.Namespace) -> int:
         return 2
     db_path = resolve_orchestrator_db(pr)
     con = init_db(db_path)
+    db_disp = redact_display_path(db_path) if redaction_enabled() else str(db_path)
 
     router, skills = await asyncio.to_thread(build_router_and_skills, log=True, log_prefix="[skillforge-route]")
     session_id = args.session_id.strip() or None
     user_id = args.user_id.strip()
+
+    picked_raw = (args.picked_names or "").strip()
+    picked_supplied = bool(picked_raw)
+    picked_list = [x.strip() for x in picked_raw.split(",") if x.strip()] if picked_raw else []
 
     try:
         result = await run_route_turn(
@@ -70,6 +80,8 @@ async def _run(args: argparse.Namespace) -> int:
             session_id=session_id,
             project_root=pr,
             include_project_rag=bool(args.include_project_rag),
+            picked_names_from_host=picked_list if picked_supplied else None,
+            picked_names_from_host_supplied=picked_supplied,
         )
     finally:
         con.close()
@@ -95,24 +107,28 @@ async def _run(args: argparse.Namespace) -> int:
                 "context_mode": router.context_mode,
                 "context_items_count": len(context_items),
                 "project_rag_items_count": (result.get("event") or {}).get("project_rag_items_count", 0),
+                "host_pick_shortlist": bool(result.get("host_pick_shortlist")),
             }
             (d / "last_route.json").write_text(json.dumps(snap, indent=2), encoding="utf-8")
         except OSError:
             pass
 
-    db_disp = redact_display_path(db_path) if redaction_enabled() else str(db_path)
-    blocks = [
-        f"# Skillforge — routed {len(picked_names)} skill(s); context=`{router.context_mode}`",
-        f"_DB:_ `{db_disp}`",
-        f"_Reasoning: {reasoning}_" if reasoning else "",
-        "",
-    ]
-    if context_items:
-        blocks.append(format_context_items_markdown(context_items))
-    elif not picked_names:
-        blocks.append("_No skills matched this prompt closely enough to load._")
-    response_text = "\n".join(b for b in blocks if b is not None)
-    print(response_text)
+    if result.get("host_pick_shortlist"):
+        response_text = ((result.get("host_pick_markdown") or "").strip() + f"\n\n---\n_session_id:_ `{sid}` · _DB:_ `{db_disp}`")
+        print(response_text.strip())
+    else:
+        blocks = [
+            f"# Skillforge — routed {len(picked_names)} skill(s); context=`{router.context_mode}`",
+            f"_DB:_ `{db_disp}`",
+            f"_Reasoning: {reasoning}_" if reasoning else "",
+            "",
+        ]
+        if context_items:
+            blocks.append(format_context_items_markdown(context_items))
+        elif not picked_names:
+            blocks.append("_No skills matched this prompt closely enough to load._")
+        response_text = "\n".join(b for b in blocks if b is not None)
+        print(response_text)
 
     if args.json_meta:
         meta = build_route_skills_meta(
@@ -126,6 +142,9 @@ async def _run(args: argparse.Namespace) -> int:
             fusion=(result.get("event") or {}).get("context_fusion"),
             context_redaction=(result.get("event") or {}).get("context_redaction"),
         )
+        if result.get("host_pick_shortlist"):
+            meta["host_pick_shortlist"] = True
+            meta["host_pick_candidates"] = result.get("host_pick_candidates") or []
         print(json.dumps(meta, indent=2), file=sys.stderr)
 
     return 0

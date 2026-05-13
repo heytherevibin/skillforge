@@ -8,7 +8,12 @@
  *   skillforge events [--watch] [--limit=N]     Print SQLite routing events
  *   skillforge route [words…] [--prompt=…]     Same routing as MCP route_skills (terminal)
  *   skillforge index --project-root=…            Chunk/embed repo files for project RAG
- *   skillforge install               One-time Python venv + deps
+ *   skillforge health [--quick] [--json]         Preflight: paths, catalog, optional router load
+ *   skillforge route-eval --fixture=…            Embedding-only regression cases (CI-friendly)
+ *   skillforge weights export|import             Snapshot learned weights (JSON)
+ *   skillforge install               One-time Python venv + deps (+ Cursor /skillforge when detected)
+ *   skillforge hosts init [--force]  Install global /skillforge for Cursor + Claude Code (no Python setup)
+ *   skillforge cursor init [--force]  Same as hosts init (alias)
  *   skillforge skills … / pack … / reset
  */
 
@@ -19,7 +24,9 @@ const os = require('os');
 const packs = require('../lib/packs');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
-const NPM_PKG_NAME = require(path.join(PKG_ROOT, 'package.json')).name;
+const PKG = require(path.join(PKG_ROOT, 'package.json'));
+const NPM_PKG_NAME = PKG.name;
+const PKG_VERSION = PKG.version || '0.0.0';
 const CONFIG_DIR = path.join(os.homedir(), '.skillforge');
 const VENV_DIR = path.join(CONFIG_DIR, 'venv');
 const DATA_DIR = path.join(CONFIG_DIR, 'data');
@@ -143,7 +150,23 @@ function runSetup() {
   }
   ok('Python dependencies installed');
 
-  // 4. Mark setup complete
+  // 4. Cursor / MCP host hooks (no Python required)
+  try {
+    const hostSetup = require('../lib/host-setup');
+    hostSetup.reportHostsAndInstallAgentCommands({
+      force: process.argv.includes('--force-cursor'),
+      pkgRoot: PKG_ROOT,
+      pkgVersion: PKG_VERSION,
+      log,
+      ok,
+      err,
+      dim: s => log(c.dim(s)),
+    });
+  } catch (e) {
+    err(`Host integration failed: ${/** @type {Error} */ (e).message}`);
+  }
+
+  // 5. Mark setup complete
   fs.writeFileSync(SETUP_MARKER, new Date().toISOString());
   ok('Setup complete\n');
 }
@@ -237,6 +260,41 @@ function runIndexCmd() {
   proc.on('exit', (code) => process.exit(code ?? 0));
 }
 
+function runHealthCmd() {
+  setupIfNeeded();
+  const sub = args.slice(1);
+  const proc = spawn(venvPython(), ['-m', 'app.health_cli', ...sub], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
+}
+
+function runRouteEvalCmd() {
+  setupIfNeeded();
+  const sub = args.slice(1);
+  const proc = spawn(venvPython(), ['-m', 'app.eval_cli', ...sub], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
+}
+
+function runWeightsCmd() {
+  setupIfNeeded();
+  const sub = args.slice(1);
+  if (sub.length === 0 || sub[0] === '--help' || sub[0] === '-h') {
+    log(c.dim('Usage: skillforge weights export [-o file] [--user-id=] [--project-root=]'));
+    log(c.dim('       skillforge weights import <file.json> [--user-id=] [--replace-user] [--project-root=]'));
+    process.exit(sub.length === 0 ? 1 : 0);
+  }
+  const proc = spawn(venvPython(), ['-m', 'app.weights_cli', ...sub], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
+}
+
 // ---- skill management ----
 function skillsAdd(srcPath) {
   if (!srcPath) {
@@ -306,6 +364,19 @@ function reset() {
   }
 }
 
+function runHostsInit() {
+  const hostSetup = require('../lib/host-setup');
+  hostSetup.reportHostsAndInstallAgentCommands({
+    force: args.includes('--force') || args.includes('--force-cursor'),
+    pkgRoot: PKG_ROOT,
+    pkgVersion: PKG_VERSION,
+    log,
+    ok,
+    err,
+    dim: s => log(c.dim(s)),
+  });
+}
+
 function showHelp() {
   log(`
 ${c.bold('skillforge')} — skill orchestrator co-tool for Claude (MCP-first)
@@ -317,6 +388,8 @@ ${c.bold('Run modes:')}
   skillforge events [--watch] [--limit=N] [--verbose] [--user=…]   Live routing log + usage (see --help)
   skillforge route [words…] [--project-root=…] [--include-project-rag]   Route a prompt (see skillforge route --help)
   skillforge index --project-root=… [--reset] [--stats-only]   Index repo text for include_project_rag
+  skillforge health [--quick] [--json] [--project-root=…]   Paths + SKILL.md counts; omit --quick to load the embedder
+  skillforge route-eval --fixture=path/to/cases.json [--router-mode=embedding]   Run routing eval cases
 
 ${c.bold('Skills:')}
   skillforge skills list           List bundled and user skills
@@ -331,10 +404,15 @@ ${c.bold('Skill packs (install from git):')}
 
 ${c.bold('Maintenance:')}
   skillforge reset                 Wipe learned state and event log
-  skillforge install               Re-run setup (auto-runs on first launch)
+  skillforge weights export        Dump learned weights JSON (see skillforge weights export --help)
+  skillforge weights import        Restore weights snapshot (see skillforge weights import --help)
+  skillforge install               Re-run setup (auto-runs on first launch; installs editor /skillforge when detected)
+  skillforge install --force-cursor  Replace managed host command files even if present
+  skillforge hosts init [--force]    Write ~/.cursor/commands + ~/.claude/commands /skillforge (no Python)
+  skillforge cursor init [--force]   Alias for hosts init
   skillforge --help                This message
 
-${c.bold('First run:')} ${c.cyan('skillforge install')} (auto on first command). Primary use: add MCP config (below). ${c.cyan('skillforge mcp')} needs no API key for embedding-only routing.
+${c.bold('First run:')} ${c.cyan('skillforge install')} (auto on first command) or ${c.cyan('npx -y')} ${NPM_PKG_NAME} ${c.cyan('install')}. Detects ${c.cyan('Cursor')} and ${c.cyan('Claude Code')} and installs managed **/skillforge** under ${c.cyan('~/.cursor/commands')} and ${c.cyan('~/.claude/commands')} (skip: ${c.dim('SKILLFORGE_SKIP_CURSOR_SETUP')}, ${c.dim('SKILLFORGE_SKIP_CLAUDE_CODE_SETUP')}; force paths: ${c.dim('SKILLFORGE_CURSOR_GLOBAL_COMMAND')} / ${c.dim('SKILLFORGE_CLAUDE_CODE_GLOBAL_COMMAND')}). ${c.cyan('skillforge mcp')} needs no API key for embedding-only routing.
 ${c.bold('Config dir:')} ${CONFIG_DIR}
 
 ${c.bold('MCP integration:')}
@@ -366,6 +444,15 @@ async function main() {
     case 'index':
       runIndexCmd();
       break;
+    case 'health':
+      runHealthCmd();
+      break;
+    case 'route-eval':
+      runRouteEvalCmd();
+      break;
+    case 'weights':
+      runWeightsCmd();
+      break;
     case 'mcp':
       if (args[1] === 'config') {
         printMcpConfig();
@@ -376,6 +463,26 @@ async function main() {
     case 'install':
       runSetup();
       break;
+    case 'hosts': {
+      const sub = args[1];
+      if (sub === 'init') {
+        runHostsInit();
+        break;
+      }
+      err('Unknown hosts subcommand.');
+      log(c.dim('  Try: skillforge hosts init [--force]'));
+      process.exit(1);
+    }
+    case 'cursor': {
+      const sub = args[1];
+      if (sub === 'init') {
+        runHostsInit();
+        break;
+      }
+      err('Unknown cursor subcommand.');
+      log(c.dim('  Try: skillforge cursor init [--force] (alias: hosts init)'));
+      process.exit(1);
+    }
     case 'reset':
       reset();
       break;

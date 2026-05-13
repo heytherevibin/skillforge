@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "defaults": {
+    "candidate_window": 22
+  },
+  "cases": [
+    {
+      "id": "python-testing",
+      "prompt": "pytest fixtures caplog and monkeypatch for an API integration test",
+      "expect_in_candidates": ["python-testing"]
+    },
+    {
+      "id": "docker-patterns",
+      "prompt": "docker compose healthcheck restart policy and rollout",
+      "expect_in_candidates": ["docker-patterns"]
+    }
+  ]
+}

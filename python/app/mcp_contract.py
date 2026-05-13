@@ -4,6 +4,9 @@ Versioned ``_meta`` with ``sources[]`` and ``budget``. Schema **1.1** adds
 per-chunk ``sources`` when ``context_items`` (RAG chunks) are returned from Phase 1.
 Schema **1.2** adds ``kind: file`` sources and project chunk char counts in ``budget``.
 Schema **1.4** adds optional ``context_redaction`` (hit counts when scrubbing is on).
+Schema **1.5** adds optional ``route_quality`` (shortlist margins, hybrid diagnostics, policy/session).
+Schema **1.6** adds optional ``feedback_effect`` (per-pick learned weights / thumbs / uses used in ranking).
+Schema **1.7** adds optional ``routing_overlay`` (project exclude/boost/notes audit for embedding shortlist).
 """
 from __future__ import annotations
 
@@ -18,7 +21,7 @@ class _SkillBody(Protocol):
     body: str
 
 
-MCP_RESPONSE_SCHEMA_VERSION = "1.4"
+MCP_RESPONSE_SCHEMA_VERSION = "1.7"
 
 
 def build_route_skills_meta(
@@ -112,6 +115,15 @@ def build_route_skills_meta(
         "candidates_preview": candidates_preview,
         "context_items_count": len(context_items or []),
     }
+    rq_meta = result.get("route_quality")
+    if isinstance(rq_meta, dict):
+        meta["route_quality"] = rq_meta
+    fb_meta = result.get("feedback_effect")
+    if isinstance(fb_meta, dict):
+        meta["feedback_effect"] = fb_meta
+    ro_meta = result.get("routing_overlay")
+    if isinstance(ro_meta, dict):
+        meta["routing_overlay"] = ro_meta
     if fusion is not None and fusion.get("enabled"):
         meta["fusion"] = fusion
     if context_redaction is not None:
