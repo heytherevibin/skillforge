@@ -1,6 +1,6 @@
 {
   "name": "@heytherevibin/skillforge",
-  "version": "0.10.1",
+  "version": "0.11.6",
   "description": "SKILL.md orchestration for AI agents: MCP-first routing with local embeddings, optional LLM stages, project RAG, policy overlays, portable learning state, and auditable telemetry.",
   "keywords": [
     "claude",
@@ -22,6 +22,7 @@
     "python/",
     "skills/",
     "README.md",
+    "docs/",
     "CHANGELOG.md",
     "STRATEGY.md",
     "LICENSE",
@@ -34,6 +35,6 @@
     "node": ">=18.0.0"
   },
   "scripts": {
-    "test": "node bin/cli.js --help"
+    "test": "node --test ci/test-user-env-profile.cjs && node bin/cli.js --help && node bin/cli.js config validate"
   }
 }

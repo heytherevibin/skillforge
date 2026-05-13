@@ -88,6 +88,26 @@ def test_host_pick_shortlist_lines_basic() -> None:
     assert rows[0]["rank"] == 1
 
 
+def test_host_pick_shortlist_defaults_respect_top_k_and_host_pick_max(monkeypatch) -> None:
+    monkeypatch.setenv("SKILLFORGE_TOP_K", "50")
+    monkeypatch.setenv("SKILLFORGE_HOST_PICK_MAX", "20")
+    facets = [
+        {
+            "name": f"c{i}",
+            "title": "t",
+            "cosine_similarity": 0.1 - i * 0.001,
+            "description_preview": "",
+        }
+        for i in range(40)
+    ]
+    _md, rows = host_pick_shortlist_lines(
+        prompt="p",
+        route_query="p",
+        facet_rows=facets,
+    )
+    assert len(rows) == 20
+
+
 def test_normalize_host_picked_main() -> None:
     from app.main import Skill, normalize_host_picked_names
 

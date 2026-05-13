@@ -138,7 +138,7 @@ def test_build_route_skills_meta_error_field() -> None:
 
 
 def test_build_route_skills_meta_includes_route_quality() -> None:
-    rq = {"schema": "route_quality/1", "picked_count": 1}
+    rq = {"schema": "route_quality/2", "picked_count": 1}
     meta = build_route_skills_meta(
         result={
             "candidates": [],

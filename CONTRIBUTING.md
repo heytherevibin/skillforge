@@ -6,10 +6,12 @@ Thank you for improving Skillforge.
 
 1. **Fork** the repository and create a branch from **`main`**.
 2. Keep changes **focused**; follow patterns in surrounding code.
-3. Run **local checks** before opening a PR from the **package root** (the directory that contains **`package.json`**):
+3. Operator / user-facing doc changes belong in **`docs/`** (`README.md` should stay the short hub + badges). Bump **`package.json`** / **`CHANGELOG.md`** when shipping user-visible doc releases.
+
+4. Run **local checks** before opening a PR from the **package root** (the directory that contains **`package.json`**):
 
    ```bash
-   node --check bin/cli.js && node --check lib/packs.js
+   node --check bin/cli.js && node --check lib/packs.js && node --check lib/user-env-profile.js
    npm test
    ```
 
@@ -23,7 +25,7 @@ Thank you for improving Skillforge.
 
    If you **intentionally** shrink or grow the bundled **`skills/`** tree below/above the current CI minimum, update **`ci/bundle-gate.json`** (`minSkillMdFiles`) and note it in the PR—see **[RELEASING.md](RELEASING.md)**.
 
-4. Open a **pull request** into **`main`** with:
+5. Open a **pull request** into **`main`** with:
    - What changed and **why**  
    - How you **verified** it (tests, manual MCP smoke, etc.)
 

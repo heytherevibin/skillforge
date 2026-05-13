@@ -13,6 +13,11 @@
       "id": "docker-patterns",
       "prompt": "docker compose healthcheck restart policy and rollout",
       "expect_in_candidates": ["docker-patterns"]
+    },
+    {
+      "id": "postgres-patterns",
+      "prompt": "PostgreSQL deadlock investigation and slow query indexing",
+      "expect_in_candidates": ["postgres-patterns"]
     }
   ]
 }

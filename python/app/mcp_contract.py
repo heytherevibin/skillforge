@@ -7,6 +7,7 @@ Schema **1.4** adds optional ``context_redaction`` (hit counts when scrubbing is
 Schema **1.5** adds optional ``route_quality`` (shortlist margins, hybrid diagnostics, policy/session).
 Schema **1.6** adds optional ``feedback_effect`` (per-pick learned weights / thumbs / uses used in ranking).
 Schema **1.7** adds optional ``routing_overlay`` (project exclude/boost/notes audit for embedding shortlist).
+Schema **1.8** bumps embedded ``route_quality`` to **route_quality/2** (ambiguous shortlist hints, diversify meta).
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ class _SkillBody(Protocol):
     body: str
 
 
-MCP_RESPONSE_SCHEMA_VERSION = "1.7"
+MCP_RESPONSE_SCHEMA_VERSION = "1.8"
 
 
 def build_route_skills_meta(

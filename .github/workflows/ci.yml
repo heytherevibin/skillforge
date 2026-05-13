@@ -35,6 +35,7 @@ jobs:
         run: |
           node --check bin/cli.js
           node --check lib/packs.js
+          node --check lib/user-env-profile.js
 
       - name: Run npm test script
         run: npm test
@@ -46,7 +47,7 @@ jobs:
 
       - name: Check Python syntax
         run: |
-          for f in python/app/main.py python/app/mcp_server.py python/app/events_cli.py python/app/materialize.py python/app/db_paths.py python/app/route_cli.py python/app/mcp_contract.py python/app/chunking.py python/app/project_index.py python/app/index_cli.py python/app/context_fusion.py python/app/redaction.py python/app/route_policies.py python/app/routing_signals.py python/app/route_quality.py python/app/route_eval_harness.py python/app/eval_cli.py python/app/health_cli.py python/app/feedback_meta.py python/app/weights_cli.py; do
+          for f in python/app/main.py python/app/router_mode.py python/app/mcp_server.py python/app/events_cli.py python/app/materialize.py python/app/db_paths.py python/app/route_cli.py python/app/mcp_contract.py python/app/chunking.py python/app/project_index.py python/app/index_cli.py python/app/context_fusion.py python/app/redaction.py python/app/route_policies.py python/app/routing_signals.py python/app/route_quality.py python/app/route_eval_harness.py python/app/eval_cli.py python/app/health_cli.py python/app/feedback_meta.py python/app/weights_cli.py; do
             python3 -m py_compile "$f"
           done
 

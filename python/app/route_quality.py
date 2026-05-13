@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 from typing import Any
 
 
@@ -31,6 +32,53 @@ def top1_cosine_vs_routing_agreement(facets: list[dict[str, Any]]) -> bool | Non
     return top_route == best_cos_name
 
 
+def _env_float(name: str, default_str: str) -> float:
+    raw = os.getenv(name, default_str).strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return float(default_str)
+
+
+def _compute_ambiguous_and_tier(
+    *,
+    n: int,
+    cosine_margin: float | None,
+    routing_score_margin: float | None,
+) -> tuple[bool, str | None]:
+    """Return (ambiguous, confidence_tier)."""
+    if n == 0:
+        return False, None
+    if n == 1:
+        return False, "high"
+    ambig_off = os.getenv("SKILLFORGE_ROUTE_AMBIGUITY_DISABLE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    if ambig_off:
+        ambiguous = False
+    else:
+        cos_thr = _env_float("SKILLFORGE_ROUTE_AMBIGUITY_COS_MARGIN", "0.012")
+        route_thr = _env_float("SKILLFORGE_ROUTE_AMBIGUITY_ROUTE_MARGIN", "0.018")
+        ambiguous = False
+        if cosine_margin is not None and cosine_margin < cos_thr:
+            ambiguous = True
+        if routing_score_margin is not None and routing_score_margin < route_thr:
+            ambiguous = True
+    tier: str
+    if ambiguous:
+        tier = "low"
+    elif cosine_margin is not None and routing_score_margin is not None:
+        if cosine_margin >= 0.04 and routing_score_margin >= 0.06:
+            tier = "high"
+        else:
+            tier = "medium"
+    else:
+        tier = "medium"
+    return ambiguous, tier
+
+
 def build_route_quality(
     *,
     facet_list: list[dict[str, Any]],
@@ -45,6 +93,7 @@ def build_route_quality(
     host_shortlist_only: bool = False,
     haiku_rerank_applied: bool = False,
     pick_path: str,
+    pick_diversify: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Structured signals for operators and MCP hosts (JSON-serializable)."""
     n = len(facet_list)
@@ -52,14 +101,24 @@ def build_route_quality(
     second_cos: float | None = None
     margin: float | None = None
     top_routing_score: float | None = None
+    second_routing_score: float | None = None
+    routing_score_margin: float | None = None
     if facet_list:
         top_cos = round(coerce_route_float(facet_list[0].get("cosine_similarity")), 6)
         top_routing_score = round(coerce_route_float(facet_list[0].get("routing_score")), 6)
         if len(facet_list) > 1:
             second_cos = round(coerce_route_float(facet_list[1].get("cosine_similarity")), 6)
             margin = round(float(top_cos - second_cos), 6)
+            second_routing_score = round(coerce_route_float(facet_list[1].get("routing_score")), 6)
+            if top_routing_score is not None and second_routing_score is not None:
+                routing_score_margin = round(float(top_routing_score - second_routing_score), 6)
 
     agree = top1_cosine_vs_routing_agreement(facet_list) if router_hybrid not in ("", "off", None) else None
+    ambiguous, confidence_tier = _compute_ambiguous_and_tier(
+        n=n,
+        cosine_margin=margin,
+        routing_score_margin=routing_score_margin,
+    )
 
     try:
         prl = int(policy_rules_loaded)
@@ -67,16 +126,25 @@ def build_route_quality(
         prl = 0
     prl = max(0, prl)
 
+    div = pick_diversify if isinstance(pick_diversify, dict) else None
+    if div is None:
+        div = {"applied": False, "dropped": [], "max_per_source": None}
+
     return {
-        "schema": "route_quality/1",
+        "schema": "route_quality/2",
         "shortlist": {
             "size": n,
             "top_cosine_similarity": top_cos,
             "second_cosine_similarity": second_cos,
             "cosine_margin": margin,
+            "second_routing_score": second_routing_score,
+            "routing_score_margin": routing_score_margin,
+            "ambiguous": ambiguous,
+            "confidence_tier": confidence_tier,
             "top_routing_score": top_routing_score,
             "hybrid_mode": router_hybrid or "off",
             "top1_dense_and_fused_agree": agree,
+            "cosine_leader_matches_routing_top": agree,
         },
         "router": {
             "mode": router_mode,
@@ -84,6 +152,7 @@ def build_route_quality(
             "host_picked": host_picked,
             "host_shortlist_only": host_shortlist_only,
             "haiku_rerank_applied": haiku_rerank_applied,
+            "pick_diversify": div,
         },
         "session": {
             "rerouted": rerouted,

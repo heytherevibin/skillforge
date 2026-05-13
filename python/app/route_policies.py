@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -51,7 +52,12 @@ def load_route_policies_config(project_root: str | None) -> dict[str, Any]:
         try:
             data = json.loads(raw_env)
             return data if isinstance(data, dict) else {"rules": []}
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            print(
+                "[skillforge] SKILLFORGE_ROUTE_POLICIES is set but invalid JSON — policies ignored.",
+                str(exc),
+                file=sys.stderr,
+            )
             return {"rules": []}
 
     paths: list[Path] = []
@@ -66,9 +72,18 @@ def load_route_policies_config(project_root: str | None) -> dict[str, Any]:
     for p in paths:
         if p.is_file():
             try:
-                data = json.loads(p.read_text(encoding="utf-8"))
+                raw = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            try:
+                data = json.loads(raw)
                 return data if isinstance(data, dict) else {"rules": []}
-            except (OSError, json.JSONDecodeError):
+            except json.JSONDecodeError as exc:
+                print(
+                    f"[skillforge] invalid JSON in route policies file — skipping {p}:",
+                    str(exc),
+                    file=sys.stderr,
+                )
                 continue
     return {"rules": []}
 

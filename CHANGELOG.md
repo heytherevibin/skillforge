@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.11.6
+
+- **Documentation hub:** Added [`docs/`](docs/) with instructional guides (**[docs/README.md](docs/README.md)** lists them).
+- **README refreshed:** Repo root **`README.md`** is a compact hub (**npm**, **GitHub release**, **`package.json` on main**, CI, licence badges; links into **`docs/`**).
+- **npm package manifest:** **`docs/`** is included under **`files`** so published tarballs bundle the guides.
+- **Hygiene:** Added repository **`.gitignore`** covering **`__pycache__`**, **`*.pyc`**, **`.pytest_cache/`**.
+
+## 0.11.5
+
+- **`skillforge config validate`:** Lint **`~/.skillforge/env`** (errors exit **1**, missing profile exits **0**). Parser extracted to **`lib/user-env-profile.js`** (shared semantics with merge). **`npm test`** runs **`node --test ci/test-user-env-profile.cjs`**, **`skillforge config validate`**, plus **`skillforge --help`**.
+- **`skillforge mcp config --with-env`:** MCP snippet includes **`entry.env`** with **`SKILLFORGE_ROUTER_MODE=host`** (non-secret scaffold). **`--with-anthropic`** still replaces the **`env`** object entirely when both are passed.
+- **`SKILLFORGE_ROUTE_POLICIES` / file policies:** **`stderr`** warning when JSON is invalid (policies ignored); tests in **`python/tests/test_route_policies.py`**.
+- **README:** document **`validate`**, MCP **`--with-env`**, and that **`python -m app.*`** skips Node profile loading unless you replicate **`buildEnv`** yourself.
+- **CLI:** **`node bin/cli.js --help`** (and **`-h`** as the first argument) prints the same banner as **`skillforge --help`**.
+- **`capabilities` MCP bundle:** **`user_env_profile`** object with **`path_command`**, **`init_command`**, **`validate_command`**, **`file`** ( **`~/.skillforge/env`** ).
+
+## 0.11.4
+
+- **Operator env profile:** optional **`~/.skillforge/env`** dotenv-style file merged before **`process.env`** when spawning Python (**`skillforge config path`**, **`skillforge config init [--force]`**). Bootstrap **`SKILLFORGE_*_SKILLS`**, **`SKILLFORGE_DB_PATH`**, and **`PYTHONPATH`** still finalize last (**`bin/cli.js`**).
+- **`skillforge health`** reports **`user_env_profile`** (whether **`~/.skillforge/env`** exists). **`skillforge tips`** mentions **`skillforge config`** and the README configuration section.
+
+## 0.11.3
+
+- **MCP operator tools (read-only):** **`get_router_status`** — env + loaded router snapshot; **`project_index_status`** — project chunk counts / last index metadata (**`project_root`** required); **`weights_snapshot`** — same JSON shape as **`skillforge weights export`**; **`events_recent`** — recent SQLite events for **`user_id`** with optional **`event_type`** filter (**`_meta.rows`** capped at 100). Implementations in **`app/mcp_operator.py`**.
+
+## 0.11.2
+
+- **Routing calibration (`route_quality`):** Bump inner schema to **`route_quality/2`**. **`shortlist`** adds **`ambiguous`**, **`confidence_tier`** (`high`/`medium`/`low`), **`routing_score_margin`**, **`second_routing_score`**, and **`cosine_leader_matches_routing_top`** (alias of **`top1_dense_and_fused_agree`**). Tunables: **`SKILLFORGE_ROUTE_AMBIGUITY_COS_MARGIN`** (default `0.012`), **`SKILLFORGE_ROUTE_AMBIGUITY_ROUTE_MARGIN`** (default `0.018`), **`SKILLFORGE_ROUTE_AMBIGUITY_DISABLE`**. **`router.pick_diversify`** records optional per-source thinning (below).
+- **Pick diversify (opt-in):** When **`SKILLFORGE_PICK_DIVERSIFY=1`**, cap picks per **`source`** (**`bundled`** / **`user`**) via **`SKILLFORGE_PICK_MAX_PER_SOURCE`** (default **`2`**) **before** regex policy **`include`** merge. Applies to **`run_route_turn`** (MCP + CLI **`route`**) and **`explain_route`**.
+- **MCP contract:** **`MCP_RESPONSE_SCHEMA_VERSION` 1.8** (additive **`_meta`** semantics; embedded **`route_quality`** v2).
+
+## 0.11.1
+
+- **MCP `materialize_project` / `skillforge_bootstrap`:** Default **`hosts`** is **`auto`**. Resolution order when **`hosts`** is **`auto`** or omitted: **`SKILLFORGE_MATERIALIZE_HOSTS`** (**`both`**, **`cursor`**, or **`claude_code`**) if set, else MCP **`initialize`** **`clientInfo`** name/title (substring **`cursor`** → **`cursor`**, **`claude`** → **`claude_code`**), optional **`CURSOR_AGENT`** / **`CURSOR_TRACE_ID`** hints, else **`both`**. Explicit **`hosts: cursor`**, **`claude_code`**, or **`both`** on the tool always wins. Responses add **`hosts_resolution`** (**`explicit`**, **`environment`**, or **`inferred`**) plus **`hosts_requested`**, **`mcp_client_name`**, **`mcp_client_title`** in **`materialize`** **`_meta`**.
+
+## 0.11.0
+
+- **Breaking (routing default):** When **`SKILLFORGE_ROUTER_MODE` is unset**, Skillforge now defaults to **`host`** (two-step **`route_skills`**: shortlist, then **`picked_names`**). Restore the previous **auto** behavior (**Haiku in-process when **`ANTHROPIC_API_KEY`** is set**, else embedding-first) with **`SKILLFORGE_ROUTER_MODE=auto`** or an empty value. Use **`embedding`** or **`full`** as before.
+- **MCP config:** **`skillforge mcp config --with-anthropic`** now sets **`SKILLFORGE_ROUTER_MODE=auto`** together with the **`ANTHROPIC_API_KEY`** placeholder so the key is not ignored (default **host** mode does not call Anthropic).
+- **Refactor:** **`app/router_mode.py`** — **`normalise_skillforge_router_mode`**; unit tests in **`python/tests/test_router_mode_env.py`**.
+- **Docs / MCP tool text:** Describe default **host** routing and how to override (**README**, **`route_skills`** tool description).
+- **Global/project `/skillforge` command:** YAML **`description`** in frontmatter (**`cursor-skillforge-global.md`**, **`claude-code-skillforge-global.md`**, **`materialize_project`** Cursor command); **`<!-- skillforge-managed … -->`** moved to EOF so Composer no longer uses the HTML marker as tooltip text.
+- **`materialize_project`:** Optional **`hosts`**: **`cursor`**, **`claude_code`**, or **`both`** (default) — scaffold only the IDE folders you ask for instead of always writing **`.cursor/`** + **`.claude/`**.
+
 ## 0.10.1
 
 - **README:** Clarify that **npm** **`latest`** and **`npm view`** are authoritative for semver; note CDN/browser cache can make the shields **npm** badge lag briefly after a publish. **Badge:** add **`cacheSeconds`** so the image URL refreshes sooner.

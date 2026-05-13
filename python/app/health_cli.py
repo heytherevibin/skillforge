@@ -79,6 +79,14 @@ def run_health(*, quick: bool, project_root: str, json_out: bool) -> int:
         "error": u_err,
     })
 
+    env_profile = Path.home() / ".skillforge" / "env"
+    checks.append({
+        "name": "user_env_profile",
+        "ok": True,
+        "path": str(env_profile),
+        "present": env_profile.is_file(),
+    })
+
     pr = (project_root or "").strip() or None
     db_path = resolve_orchestrator_db(pr)
     db_ok = True
@@ -142,6 +150,11 @@ def run_health(*, quick: bool, project_root: str, json_out: bool) -> int:
                 print(f"    SKILL.md count: {c['skill_md_count']}", file=sys.stderr)
             if c.get("skill_count") is not None:
                 print(f"    router skills: {c['skill_count']}", file=sys.stderr)
+            if c.get("present") is not None:
+                if c["present"]:
+                    print(f"    present: yes", file=sys.stderr)
+                else:
+                    print(f"    present: no · optional (`skillforge config init`)", file=sys.stderr)
             if c.get("error"):
                 print(f"    error: {c['error']}", file=sys.stderr)
         print("health: ok" if not failed else "health: failed", file=sys.stderr)

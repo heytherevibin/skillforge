@@ -28,14 +28,14 @@ You need the **`NPM_TOKEN`** repository secret.
 
 Create one at [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens) (**Generate New Token** → **Granular Access Token**). Optionally explore [**trusted publishing** (OIDC)](https://docs.npmjs.com/trusted-publishers/) later to avoid long-lived tokens.
 
-1. On `main`, set **`version`** in `package.json` to the version you are releasing (must be **unused** on npm — e.g. `0.10.1`).
+1. On `main`, set **`version`** in `package.json` to the version you are releasing (must be **unused** on npm — e.g. `0.11.0`). The **README badge** is driven by [Shields **GitHub package.json version**](https://shields.io/badges/git-hub-package-json-version) for `heytherevibin/skillforge` (**default branch**)—it tracks this same field after you push; **no manual README edit** for semver.
 2. Match **MCP** `serverInfo.version` in `python/app/mcp_server.py` (must equal `package.json`) and add a **`CHANGELOG.md`** section for that version.
 3. Commit and **`git push origin main`**. Wait for **CI** to pass.
-4. Create a tag whose name is **`v` + that exact version**:  
-   `git tag v0.10.1 && git push origin v0.10.1`
+4. Create a tag whose name is **`v` + that exact version**, e.g.:  
+   `git tag v0.11.0 && git push origin v0.11.0`
 5. Open **Actions → Skillforge release**. The job will **fail the version check** if the tag does not match `package.json`.
 6. Confirm on npm: `npm view @heytherevibin/skillforge version`  
-   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.10.1`**) and the `.tgz` asset.
+   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.11.0`**) and the `.tgz` asset.
 
 Scoped packages require a **public** publish; the workflow already runs `npm publish --access public`.
 
@@ -74,7 +74,7 @@ The **minimum** number of **`skills/**/**/SKILL.md`** files required in CI is **
 ## Local sanity checks (before push)
 
 ```bash
-node --check bin/cli.js && node --check lib/packs.js
+node --check bin/cli.js && node --check lib/packs.js && node --check lib/user-env-profile.js
 npm test
 ```
 

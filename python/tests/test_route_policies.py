@@ -113,3 +113,32 @@ def test_invalid_regex_recorded(tmp_path, skill_alpha, monkeypatch) -> None:
         max_active=7,
     )
     assert any(r.get("effect") == "invalid_regex" for r in audit)
+
+
+def test_bad_inline_policies_warns_stderr(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SKILLFORGE_ROUTE_POLICIES", "{not-json")
+    monkeypatch.delenv("SKILLFORGE_ROUTE_POLICIES_FILE", raising=False)
+    cfg = load_route_policies_config(None)
+    assert cfg == {"rules": []}
+    err = capsys.readouterr().err
+    assert "SKILLFORGE_ROUTE_POLICIES" in err
+    assert "invalid json" in err.lower()
+
+
+def test_bad_policies_file_warns_stderr(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("SKILLFORGE_ROUTE_POLICIES", raising=False)
+    p = tmp_path / "broken.json"
+    p.write_text("{bad", encoding="utf-8")
+    monkeypatch.setenv("SKILLFORGE_ROUTE_POLICIES_FILE", str(p))
+    cfg = load_route_policies_config(None)
+    assert cfg == {"rules": []}
+    err = capsys.readouterr().err
+    assert str(p) in err
+    assert "invalid json" in err.lower()

@@ -27,8 +27,8 @@ Skillforge is a **local, MCP-first orchestration layer** that selects a **small,
 |-----------------|---------------------|
 | **Project workspace** | Pass **`project_root`** so state and optional RAG live under **`.skillforge/`**. |
 | **Strict context budgets** | Tune **`SKILLFORGE_CONTEXT_*`**, **`SKILLFORGE_ROUTE_MAX_CHARS`**, and project RAG caps. |
-| **No LLM keys on router** | Use **`SKILLFORGE_ROUTER_MODE=embedding`** (or omit **`ANTHROPIC_API_KEY`** in auto mode). |
-| **Human-in-the-loop picks** | **`SKILLFORGE_ROUTER_MODE=host`**: shortlist first, then **`picked_names`**. |
+| **No LLM keys on router** | Omit **`ANTHROPIC_API_KEY`** (**`host`** is the default when **`ROUTER_MODE`** is unset) or set **`SKILLFORGE_ROUTER_MODE=embedding`**. Legacy **auto** + key: **`SKILLFORGE_ROUTER_MODE=auto`**. |
+| **Human-in-the-loop picks** | **`SKILLFORGE_ROUTER_MODE=host`** (default when unset): shortlist first, then **`picked_names`**. |
 | **Org policy** | Central **`SKILLFORGE_ROUTE_POLICIES`** / file + per-repo **`policies.json`** with overlay keys. |
 
 ## Near-term themes

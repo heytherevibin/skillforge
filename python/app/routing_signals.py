@@ -12,6 +12,11 @@ from app.route_quality import coerce_route_float
 _TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9_\-./]{2,}", re.I)
 
 
+def host_pick_max_candidates(*, top_k_cap: int) -> int:
+    """Caps host-mode numbered shortlist size (parity with ``run_route_turn``)."""
+    return max(3, min(top_k_cap, int(os.getenv("SKILLFORGE_HOST_PICK_MAX", "12"))))
+
+
 class _SkillCard(Protocol):
     title: str
     description: str
@@ -108,7 +113,8 @@ def host_pick_shortlist_lines(
     """Tight numbered list + structured rows for MCP host-pick phase (no in-process LLM)."""
     mc = max_candidates
     if mc is None:
-        mc = max(3, int(os.getenv("SKILLFORGE_HOST_PICK_MAX", "12")))
+        top_k_cap = int(os.getenv("SKILLFORGE_TOP_K", "15"))
+        mc = host_pick_max_candidates(top_k_cap=top_k_cap)
     lc = line_chars if line_chars is not None else int(os.getenv("SKILLFORGE_HOST_PICK_LINE_CHARS", "120"))
     prompt_one = (prompt or "").strip().replace("\n", " ")
     if len(prompt_one) > 160:

@@ -6,15 +6,20 @@
  *   skillforge, skillforge --help   Show help (primary path: MCP, not a web app)
  *   skillforge mcp                   MCP stdio server (Claude / Cursor / …)
  *   skillforge events [--watch] [--limit=N]     Print SQLite routing events
+ *   skillforge replay [--session-id]             Chronological SQLite event replay
+ *   skillforge tools <cmd> [--json]               MCP tool parity (see skillforge tools -h)
+ *   skillforge tips                             Short MCP + terminal cheatsheet
+ *   skillforge agent [--prompt=…]              Terminal chat agent (OpenAI-compatible API tools)
  *   skillforge route [words…] [--prompt=…]     Same routing as MCP route_skills (terminal)
  *   skillforge index --project-root=…            Chunk/embed repo files for project RAG
  *   skillforge health [--quick] [--json]         Preflight: paths, catalog, optional router load
  *   skillforge route-eval --fixture=…            Embedding-only regression cases (CI-friendly)
  *   skillforge weights export|import             Snapshot learned weights (JSON)
  *   skillforge install               One-time Python venv + deps (+ Cursor /skillforge when detected)
+ *   skillforge config path|init|validate …  ~/.skillforge/env (dotenv-style profile + linter)
  *   skillforge hosts init [--force]  Install global /skillforge for Cursor + Claude Code (no Python setup)
  *   skillforge cursor init [--force]  Same as hosts init (alias)
- *   skillforge skills … / pack … / reset
+ *   skillforge skills list|add|remove|init|lint … ; pack … ; reset
  */
 
 const path = require('path');
@@ -22,6 +27,7 @@ const fs = require('fs');
 const { spawn, spawnSync } = require('child_process');
 const os = require('os');
 const packs = require('../lib/packs');
+const userEnvProfile = require('../lib/user-env-profile');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
 const PKG = require(path.join(PKG_ROOT, 'package.json'));
@@ -34,6 +40,8 @@ const USER_SKILLS_DIR = path.join(CONFIG_DIR, 'skills');
 /** Bearer-token file for the removed HTTP API (<=0.6.x); deleted on first CLI use. */
 const LEGACY_AUTH_FILE = path.join(CONFIG_DIR, 'auth.json');
 const SETUP_MARKER = path.join(CONFIG_DIR, '.setup-complete');
+/** User-owned KEY=VALUE profile (merged before process.env — shell / MCP host overrides). */
+const USER_ENV_PATH = path.join(CONFIG_DIR, 'env');
 
 const args = process.argv.slice(2);
 const cmd = args[0];
@@ -179,7 +187,9 @@ function setupIfNeeded() {
 }
 
 function buildEnv(extra = {}) {
+  const { vars: profile } = userEnvProfile.readUserEnvProfileFromFile(USER_ENV_PATH);
   return {
+    ...profile,
     ...process.env,
     SKILLFORGE_BUNDLED_SKILLS: path.join(PKG_ROOT, 'skills'),
     SKILLFORGE_USER_SKILLS: USER_SKILLS_DIR,
@@ -190,10 +200,121 @@ function buildEnv(extra = {}) {
   };
 }
 
+function printUserEnvProfilePathLine() {
+  process.stdout.write(USER_ENV_PATH + '\n');
+}
+
+function runInitUserEnv(templateForce) {
+  ensureDirs();
+  if (fs.existsSync(USER_ENV_PATH) && !templateForce) {
+    err(`${USER_ENV_PATH} already exists.`);
+    log(c.dim('  Use --force to replace it with the template (you will lose current contents).'));
+    process.exit(1);
+  }
+  const template =
+    '# Skillforge user environment profile (~/.skillforge/env).\n' +
+    '# Loaded for every Skillforge subprocess (CLI and `skillforge mcp`).\n' +
+    '# Merge order: entries here first, then process/MCP host env overwrites duplicates; SKILLFORGE_BUNDLED_SKILLS,\n' +
+    '# SKILLFORGE_USER_SKILLS, SKILLFORGE_DB_PATH, and PYTHONPATH are always finalized by Skillforge.\n' +
+    '# Omit secrets from VCS; chmod 600 is recommended.\n#\n' +
+    '# Examples (uncomment and set):\n' +
+    '# ANTHROPIC_API_KEY=\n' +
+    '# SKILLFORGE_ROUTER_MODE=host\n' +
+    '# OPENAI_API_BASE=http://127.0.0.1:11434/v1\n' +
+    '# SKILLFORGE_ROUTER_LLM_BACKEND=openai_compatible\n' +
+    '# SKILLFORGE_AGENT_MODEL=llama3.2\n' +
+    '\n';
+  fs.writeFileSync(USER_ENV_PATH, template, 'utf8');
+  if (!isWindows()) {
+    try {
+      fs.chmodSync(USER_ENV_PATH, 0o600);
+    } catch (_) {
+      /* chmod optional */
+    }
+  }
+  ok(`Wrote commented template:\n${c.dim(`  ${USER_ENV_PATH}`)}`);
+}
+
+function runValidateEnvProfileCmd() {
+  const r = userEnvProfile.readUserEnvProfileFromFile(USER_ENV_PATH);
+  if (r.missingFile) {
+    info('Optional profile file not created yet.');
+    log(c.dim(`  Path: ${USER_ENV_PATH}`));
+    log(c.dim('  scaffold: skillforge config init'));
+    process.exit(0);
+  }
+
+  let nErr = 0;
+  let nWarn = 0;
+  for (const issue of r.issues) {
+    const loc = issue.line ? ` ${c.dim(`(line ${issue.line})`)}` : '';
+    if (issue.level === 'error') {
+      nErr += 1;
+      err(`${issue.message}${loc}`);
+    } else {
+      nWarn += 1;
+      log(c.yellow('⚠'), `${issue.message}${loc}`);
+    }
+  }
+
+  if (nErr === 0 && nWarn === 0) {
+    ok(`Profile syntax OK — ${USER_ENV_PATH}`);
+    process.exit(0);
+  }
+  if (nErr === 0) {
+    ok(`Validated — ${nWarn} warning(s) only.`);
+    process.exit(0);
+  }
+  log(c.dim(`  Correct ${USER_ENV_PATH}, then run skillforge config validate again.`));
+  process.exit(1);
+}
+
+function runConfigCmd() {
+  const sub = args[1];
+  if (
+    sub === undefined ||
+    sub === '--help' ||
+    sub === '-h'
+  ) {
+    log(c.bold('Usage'));
+    log(c.dim('  skillforge config path'));
+    log(c.dim('  skillforge config init [--force]'));
+    log(c.dim('  skillforge config validate\n'));
+    log(c.bold('Description'));
+    log(
+      c.dim(
+        '  path      Print ~/.skillforge/env (dotenv KEY=value; optional export; # comments).\n' +
+          '  init      Create a commented template (--force replaces an existing profile).\n' +
+          '  validate  Lint the profile — errors exit 1; missing file exits 0 (optional).',
+      ),
+    );
+    process.exit(sub === undefined ? 1 : 0);
+  }
+  if (sub === 'path') {
+    printUserEnvProfilePathLine();
+    return;
+  }
+  if (sub === 'init') {
+    const templateForce =
+      args.includes('--force');
+    runInitUserEnv(templateForce);
+    log(c.dim('  Run skillforge config validate after editing.'));
+    return;
+  }
+  if (sub === 'validate') {
+    runValidateEnvProfileCmd();
+    return;
+  }
+  err(`Unknown config subcommand: ${sub}`);
+  log(c.dim('  Try: path, init, validate'));
+  process.exit(1);
+}
+
 function printMcpConfig() {
   setupIfNeeded();
   const useLocal = args.includes('--local');
   const withKey = args.includes('--with-anthropic');
+  const withEnv = args.includes('--with-env');
   const cliJs = path.join(PKG_ROOT, 'bin', 'cli.js');
   /** @type {Record<string, unknown>} */
   const entry = useLocal
@@ -206,20 +327,32 @@ function printMcpConfig() {
         args: ['-y', NPM_PKG_NAME, 'mcp'],
       };
   if (withKey) {
-    entry.env = { ANTHROPIC_API_KEY: 'sk-ant-…' };
+    entry.env = {
+      SKILLFORGE_ROUTER_MODE: 'auto',
+      ANTHROPIC_API_KEY: 'sk-ant-…',
+    };
+  } else if (withEnv) {
+    entry.env = {
+      SKILLFORGE_ROUTER_MODE: 'host',
+    };
   }
   const out = { mcpServers: { skillforge: entry } };
   process.stdout.write(JSON.stringify(out, null, 2) + '\n');
-  process.stderr.write(
-    c.dim(
-      'Merge into ~/.cursor/mcp.json, Claude Desktop config, etc. --local uses this package checkout; --with-anthropic adds env placeholder for Haiku routing.\n'
-    )
-  );
+  let note =
+    'Merge into ~/.cursor/mcp.json, Claude Desktop config, etc. --local uses this package checkout. ' +
+    'Routing: default host (two-step picked_names); --with-anthropic ⇒ SKILLFORGE_ROUTER_MODE=auto plus ANTHROPIC_API_KEY placeholder. ' +
+    '--with-env adds server.env SKILLFORGE_ROUTER_MODE=host explicitly (combine with ~/.skillforge/env for secrets).';
+  if (withKey && withEnv) {
+    note += ' When both --with-env and --with-anthropic are passed, the emitted env matches --with-anthropic only.';
+  }
+  process.stderr.write(c.dim(`${note}\n`));
 }
 
 function runMcpServer() {
   setupIfNeeded();
-  const env = buildEnv();
+  const env = buildEnv({
+    SKILLFORGE_TRANSPORT: 'mcp',
+  });
   // MCP JSON-RPC must own stdout. This process must not log to stdout after this point.
   const proc = spawn(venvPython(), ['-m', 'app.mcp_server'], {
     stdio: ['inherit', 'inherit', 'inherit'],
@@ -234,6 +367,55 @@ function runEventsCmd() {
   setupIfNeeded();
   const sub = args.slice(1);
   const proc = spawn(venvPython(), ['-m', 'app.events_cli', ...sub], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
+}
+
+function runReplayCmd() {
+  setupIfNeeded();
+  const sub = args.slice(1);
+  const proc = spawn(venvPython(), ['-m', 'app.replay_cli', ...sub], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
+}
+
+function runTipsCmd() {
+  setupIfNeeded();
+  const proc = spawn(venvPython(), ['-m', 'app.tips_cli'], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
+}
+
+function runToolsCmd() {
+  setupIfNeeded();
+  const sub = args.slice(2);
+  const proc = spawn(venvPython(), ['-m', 'app.tools_cli', ...sub], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
+}
+
+function runAgentCmd() {
+  setupIfNeeded();
+  // args = argv after 'skillforge' — ["agent", ...], same pattern as route (slice after subcommand).
+  const sub = args.slice(1);
+  const proc = spawn(venvPython(), ['-m', 'app.agent_cli', ...sub], {
+    stdio: 'inherit',
+    env: buildEnv(),
+  });
+  proc.on('exit', (code) => process.exit(code ?? 0));
+}
+
+function runSkillsAuthorCmd(mode, argv) {
+  setupIfNeeded();
+  const proc = spawn(venvPython(), ['-m', 'app.skills_author_cli', mode, ...argv], {
     stdio: 'inherit',
     env: buildEnv(),
   });
@@ -378,55 +560,101 @@ function runHostsInit() {
 }
 
 function showHelp() {
-  log(`
-${c.bold('skillforge')} — skill orchestrator co-tool for Claude (MCP-first)
+  const colW = 48;
+  const row = (cmd, desc) => {
+    const s = `${cmd}`;
+    const padLen = Math.max(2, colW - s.length);
+    const pad = ' '.repeat(padLen);
+    return `  ${c.cyan(s)}${pad}${desc}`;
+  };
+  const sec = title => `\n${c.bold(title)}\n${c.dim('  ' + '─'.repeat(72))}`;
+  log('');
+  log(c.bold(`Skillforge`) + `  ${c.dim('local SKILL.md orchestration')}`);
+  log(
+    `${c.dim('Version')} ${PKG_VERSION}${c.dim('  ·  ')}Enterprise automation and MCP hosts share the same Python engine.`,
+  );
+  log(`${c.dim('State directory')}  ${CONFIG_DIR}`);
+  log(
+    `\n${c.dim('PRIMARY INTEGRATION (production workloads):')} ${c.bold('stdio MCP')} — ${c.dim('configure')} ${c.cyan('skillforge mcp config')} ${c.dim(', then restart the IDE / agent.')}`,
+  );
+  log(
+    `${c.dim('TERMINAL (operators, scripting, CI):')} ${c.dim('routing, observability, and')} ${c.cyan('skillforge tools')} ${c.dim('(MCP tool parity).')}`,
+  );
 
-${c.bold('Run modes:')}
-  skillforge --help                This message (recommended first step)
-  skillforge mcp                   MCP stdio — primary integration for Claude / Cursor
-  skillforge mcp config [--local] [--with-anthropic]   Print JSON for MCP host (merge into mcp.json)
-  skillforge events [--watch] [--limit=N] [--verbose] [--user=…]   Live routing log + usage (see --help)
-  skillforge route [words…] [--project-root=…] [--include-project-rag]   Route a prompt (see skillforge route --help)
-  skillforge index --project-root=… [--reset] [--stats-only]   Index repo text for include_project_rag
-  skillforge health [--quick] [--json] [--project-root=…]   Paths + SKILL.md counts; omit --quick to load the embedder
-  skillforge route-eval --fixture=path/to/cases.json [--router-mode=embedding]   Run routing eval cases
+  log(sec('Model Context Protocol'));
+  log(row('skillforge mcp', 'Start JSON-RPC MCP server over stdio (Cursor, Claude Desktop, compatible hosts)'));
+  log(
+    row(
+      'skillforge mcp config [--local] [--with-anthropic] [--with-env]',
+      'Emit MCP host JSON (--with-env adds SKILLFORGE_ROUTER_MODE=host)',
+    ),
+  );
+  log(`  ${c.dim('Default routing')}  SKILLFORGE_ROUTER_MODE=host · two-step shortlist then picked_names`);
+  log(
+    `  ${c.dim('Minimal npx host entry')}  ${JSON.stringify({
+      mcpServers: {
+        skillforge: { command: 'npx', args: ['-y', NPM_PKG_NAME, 'mcp'] },
+      },
+    })}`,
+  );
 
-${c.bold('Skills:')}
-  skillforge skills list           List bundled and user skills
-  skillforge skills add <path>     Add a local skill folder
-  skillforge skills remove <name>  Remove a user-added skill
+  log(sec('Routing & context'));
+  log(row('skillforge agent [--prompt TEXT]', 'Standalone chat agent · OpenAI-compatible API + MCP tool handlers'));
+  log(row('skillforge route [TEXT…]', 'Interactive / scripted routing · --json · -i · --explain (see route --help)'));
+  log(row('skillforge index --project-root=…', 'Project text index RAG chunks (SQLite project_chunks)'));
+  log(row('skillforge tips', 'Short operator reference (routing, env, MCP host mode)'));
 
-${c.bold('Skill packs (install from git):')}
-  skillforge pack install <repo>   Install pack (e.g. "user/repo" or git URL)
-  skillforge pack list             List installed packs
-  skillforge pack update <name>    Update a pack
-  skillforge pack remove <name>    Uninstall a pack
+  log(sec('MCP tool parity (CLI)'));
+  log(row('skillforge tools …', 'Subcommands mirror MCP tools (same handlers)'));
+  log(
+    row(
+      'skillforge tools --help',
+      'search · explain · get · catalog · feedback · disable · referenced',
+    ),
+  );
+  log(
+    `  ${c.dim('└')} ${c.dim('materialize · bootstrap · capabilities · router-status · index-status · weights-snapshot · events-recent')}`,
+  );
+  log(row('skillforge tools … --json', 'Raw tool envelope (content + _meta) for automation'));
 
-${c.bold('Maintenance:')}
-  skillforge reset                 Wipe learned state and event log
-  skillforge weights export        Dump learned weights JSON (see skillforge weights export --help)
-  skillforge weights import        Restore weights snapshot (see skillforge weights import --help)
-  skillforge install               Re-run setup (auto-runs on first launch; installs editor /skillforge when detected)
-  skillforge install --force-cursor  Replace managed host command files even if present
-  skillforge hosts init [--force]    Write ~/.cursor/commands + ~/.claude/commands /skillforge (no Python)
-  skillforge cursor init [--force]   Alias for hosts init
-  skillforge --help                This message
+  log(sec('Observability & diagnostics'));
+  log(row('skillforge events …', '--watch routing / usage SQLite tail'));
+  log(row('skillforge replay …', 'Chronological event timeline (--session-id, --json)'));
+  log(row('skillforge health …', 'Preflight: paths · catalog (--quick skips embed load)'));
+  log(row('skillforge route-eval …', 'Fixture embedding regression harness (CI)'));
+  log(row('skillforge weights export|import …', 'Portable learned weights snapshot'));
 
-${c.bold('First run:')} ${c.cyan('skillforge install')} (auto on first command) or ${c.cyan('npx -y')} ${NPM_PKG_NAME} ${c.cyan('install')}. Detects ${c.cyan('Cursor')} and ${c.cyan('Claude Code')} and installs managed **/skillforge** under ${c.cyan('~/.cursor/commands')} and ${c.cyan('~/.claude/commands')} (skip: ${c.dim('SKILLFORGE_SKIP_CURSOR_SETUP')}, ${c.dim('SKILLFORGE_SKIP_CLAUDE_CODE_SETUP')}; force paths: ${c.dim('SKILLFORGE_CURSOR_GLOBAL_COMMAND')} / ${c.dim('SKILLFORGE_CLAUDE_CODE_GLOBAL_COMMAND')}). ${c.cyan('skillforge mcp')} needs no API key for embedding-only routing.
-${c.bold('Config dir:')} ${CONFIG_DIR}
+  log(sec('Catalog & authoring'));
+  log(row('skillforge skills list|add|remove|init|lint …', 'Filesystem skill trees + scaffold + manifest lint'));
+  log(row('skillforge pack install|list|update|remove …', 'Git-hosted skill bundles'));
 
-${c.bold('MCP integration:')}
-  Generate a config snippet: ${c.cyan('skillforge mcp config')} (add ${c.cyan('--local')} for this checkout, ${c.cyan('--with-anthropic')} for a key placeholder)
-  Minimal npx example:
-    ${JSON.stringify({ mcpServers: { skillforge: { command: 'npx', args: ['-y', NPM_PKG_NAME, 'mcp'] } } })}
-`);
+  log(sec('Setup & lifecycle'));
+  log(row('skillforge install [--force-cursor]', 'Python venv + deps + optional Cursor / Claude Code slash templates'));
+  log(row('skillforge config path|init|validate …', 'Stable ~/.skillforge/env (dotenv linter: config validate · README)'));
+  log(row('skillforge hosts init · skillforge cursor init', 'Rewrite managed /skillforge host commands (--force)'));
+  log(row('skillforge reset', 'Drop SQLite learning + event history'));
+
+  log(`\n${c.bold('First run')}  ${c.cyan('skillforge install')} ${c.dim('or')} ${c.cyan(`npx -y ${NPM_PKG_NAME} install`)}`);
+  log(
+    c.dim(
+      '  Auto-provisions ~/.skillforge/venv · optional Cursor + Claude Code /skillforge commands ' +
+        '(SKILLFORGE_SKIP_CURSOR_SETUP, SKILLFORGE_SKIP_CLAUDE_CODE_SETUP).',
+    ),
+  );
+  log(`\n${c.bold('Documentation')}  package README (${NPM_PKG_NAME})`);
 }
 
 // ---- main ----
 async function main() {
   dropLegacyAuthJsonIfPresent();
 
-  if (args.includes('--help') || args.includes('-h') || cmd === 'help') {
+  if (cmd === 'help') {
+    showHelp();
+    return;
+  }
+
+  const wantsCliHelp = args.includes('--help') || args.includes('-h');
+  if (wantsCliHelp && (cmd === undefined || cmd === '--help' || cmd === '-h')) {
     showHelp();
     return;
   }
@@ -437,6 +665,18 @@ async function main() {
       break;
     case 'events':
       runEventsCmd();
+      break;
+    case 'replay':
+      runReplayCmd();
+      break;
+    case 'tips':
+      runTipsCmd();
+      break;
+    case 'tools':
+      runToolsCmd();
+      break;
+    case 'agent':
+      runAgentCmd();
       break;
     case 'route':
       runRouteCmd();
@@ -486,14 +726,19 @@ async function main() {
     case 'reset':
       reset();
       break;
+    case 'config':
+      runConfigCmd();
+      break;
     case 'skills': {
       const sub = args[1];
       if (sub === 'list') skillsList();
       else if (sub === 'add') skillsAdd(args[2]);
       else if (sub === 'remove' || sub === 'rm') skillsRemove(args[2]);
+      else if (sub === 'init') runSkillsAuthorCmd('init', args.slice(2));
+      else if (sub === 'lint') runSkillsAuthorCmd('lint', args.slice(2));
       else {
         err(`Unknown skills subcommand: ${sub}`);
-        log(c.dim('  Try: list, add, remove'));
+        log(c.dim('  Try: list, add, remove, init, lint'));
         process.exit(1);
       }
       break;

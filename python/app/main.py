@@ -32,7 +32,14 @@ from app.project_index import (
     retrieve_project_context_items,
 )
 from app.redaction import redaction_enabled, redact_secret_patterns, sanitize_context_items
+from app.router_llm import (
+    AnthropicRouterLLM,
+    OpenAIRouterLLM,
+    resolve_openai_router_defaults,
+    transport_is_mcp,
+)
 from app.feedback_meta import build_feedback_effect
+from app.pick_diversify import diversify_picked_names
 from app.route_policies import (
     build_routing_overlay_payload,
     load_route_policies_config,
@@ -43,16 +50,28 @@ from app.route_policies import (
 from app.route_quality import build_route_quality, coerce_route_float
 from app.routing_signals import (
     build_route_query_text,
+    host_pick_max_candidates,
     host_pick_shortlist_lines,
     keyword_overlap_scores,
     normalize_minmax,
     skill_routing_card,
     tokenize_skills_query,
 )
+from app.router_mode import normalise_skillforge_router_mode
+from app.skill_manifest import skill_manifest_strict_exclusion, validate_skill_manifest
 
 # ---------- Config (env-driven so the Node wrapper controls paths) ----------
-BUNDLED_SKILLS = Path(os.getenv("SKILLFORGE_BUNDLED_SKILLS", "./skills"))
-USER_SKILLS = Path(os.getenv("SKILLFORGE_USER_SKILLS", str(Path.home() / ".skillforge" / "skills")))
+
+
+def bundled_skills_dir() -> Path:
+    raw = os.getenv("SKILLFORGE_BUNDLED_SKILLS", "./skills").strip() or "./skills"
+    return Path(raw).expanduser().resolve()
+
+
+def user_skills_dir() -> Path:
+    fallback = str(Path.home() / ".skillforge" / "skills")
+    raw = os.getenv("SKILLFORGE_USER_SKILLS", fallback).strip() or fallback
+    return Path(raw).expanduser()
 
 
 DB_PATH = global_db_path()
@@ -63,8 +82,8 @@ ROUTER_MODEL = os.getenv("SKILLFORGE_ROUTER_MODEL", "claude-haiku-4-5-20251001")
 TOP_K_CANDIDATES = int(os.getenv("SKILLFORGE_TOP_K", "15"))
 MAX_ACTIVE_SKILLS = int(os.getenv("SKILLFORGE_MAX_ACTIVE", "7"))
 REROUTE_THRESHOLD = float(os.getenv("SKILLFORGE_REROUTE_THRESHOLD", "0.4"))
-# "" | "full" | "embedding" | "host" — embedding skips Haiku; host skips in-process pick (MCP must pass picked_names).
-SKILLFORGE_ROUTER_MODE = os.getenv("SKILLFORGE_ROUTER_MODE", "").strip().lower()
+# "" | "full" | "embedding" | "host" — "" means auto (Haiku when ANTHROPIC_API_KEY set). Unset env → default host.
+SKILLFORGE_ROUTER_MODE = normalise_skillforge_router_mode(os.getenv("SKILLFORGE_ROUTER_MODE", "host"))
 # chunks: RAG-style line-bounded chunks from picked skills. full_body: inject entire SKILL.md per pick (legacy).
 SKILLFORGE_CONTEXT_MODE = os.getenv("SKILLFORGE_CONTEXT_MODE", "chunks").strip().lower()
 ROUTE_MAX_CONTEXT_CHARS = int(os.getenv("SKILLFORGE_ROUTE_MAX_CHARS", "60000"))
@@ -104,48 +123,76 @@ def build_router_and_skills(
     log: bool = True,
     log_prefix: str = "[skillforge]",
 ) -> tuple[Router, dict[str, Skill]]:
-    """Load embedding model, skill catalog, and Router (shared by MCP and ``skillforge route`` CLI)."""
+    """Load embedding model, skill catalog, and Router (shared by MCP and ``skillforge route`` CLI).
+
+    When ``SKILLFORGE_TRANSPORT=mcp`` (stdio MCP), router LLM is Anthropic-only when a key backs the
+    mode — legacy semantics. Standalone subprocesses omit that env and may set
+    ``SKILLFORGE_ROUTER_LLM_BACKEND=openai_compatible``.
+    """
     if log:
         print(f"{log_prefix} Loading skills...", file=sys.stderr)
-    skills = load_all_skills()
+    skills = load_all_skills(manifest_log_prefix=log_prefix)
     embed_model = SentenceTransformer(os.getenv("SKILLFORGE_EMBED_MODEL", "all-MiniLM-L6-v2"))
     key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     mode = SKILLFORGE_ROUTER_MODE
+    compat_backend_raw = os.getenv("SKILLFORGE_ROUTER_LLM_BACKEND", "").strip().lower()
+    mcp_t = transport_is_mcp()
+
+    anth_legacy = None
     if mode == "embedding":
-        anthropic = None
-        router_note = "embedding-only (SKILLFORGE_ROUTER_MODE=embedding)"
+        router_note_llm = "embedding-only (SKILLFORGE_ROUTER_MODE=embedding)"
     elif mode == "host":
-        anthropic = None
-        router_note = (
+        router_note_llm = (
             "host-pick (SKILLFORGE_ROUTER_MODE=host): no in-process router LLM; "
             "first route_skills call returns a shortlist — call again with picked_names"
         )
     elif mode == "full":
         if key:
-            anthropic = AsyncAnthropic()
-            router_note = "full Haiku router (SKILLFORGE_ROUTER_MODE=full)"
+            anth_legacy = AsyncAnthropic()
+            router_note_llm = "full Haiku router (SKILLFORGE_ROUTER_MODE=full)"
         else:
-            anthropic = None
-            router_note = (
+            router_note_llm = (
                 "embedding-only (SKILLFORGE_ROUTER_MODE=full but no ANTHROPIC_API_KEY — "
                 "Haiku routing skipped)"
             )
     elif key:
-        anthropic = AsyncAnthropic()
-        router_note = "full Haiku router (default; ANTHROPIC_API_KEY set)"
+        anth_legacy = AsyncAnthropic()
+        router_note_llm = "full Haiku router (default; ANTHROPIC_API_KEY set)"
     else:
-        anthropic = None
-        router_note = (
+        router_note_llm = (
             "embedding-only (no ANTHROPIC_API_KEY — keyless. "
             "Set ANTHROPIC_API_KEY for Haiku routing.)"
         )
+
+    router_llm: AnthropicRouterLLM | OpenAIRouterLLM | None = None
+    if mode == "embedding":
+        router_note = router_note_llm
+        router_llm = None
+    elif mcp_t:
+        router_note = router_note_llm
+        router_llm = AnthropicRouterLLM(anth_legacy) if anth_legacy else None
+    elif compat_backend_raw == "openai_compatible":
+        b, rk, om = resolve_openai_router_defaults()
+        try:
+            router_llm = OpenAIRouterLLM(api_key=rk, base_url=b, default_model=om)
+            router_note = f"standalone openai_compatible router ({b}, model={om})"
+        except Exception as e:
+            router_llm = AnthropicRouterLLM(anth_legacy) if anth_legacy else None
+            router_note = (
+                f"{router_note_llm} — openai_compatible init failed ({e}); "
+                f"fallback to anthropic/embed-only wiring"
+            )
+    else:
+        router_note = router_note_llm
+        router_llm = AnthropicRouterLLM(anth_legacy) if anth_legacy else None
+
     if log:
         print(f"{log_prefix} {router_note}", file=sys.stderr)
         print(
-            f"{log_prefix} Loaded {len(skills)} skills from bundled={BUNDLED_SKILLS} user={USER_SKILLS}",
+            f"{log_prefix} Loaded {len(skills)} skills from bundled={bundled_skills_dir()} user={user_skills_dir()}",
             file=sys.stderr,
         )
-    router = Router(skills, embed_model, anthropic)
+    router = Router(skills, embed_model, router_llm)
     skmap = {s.name: s for s in skills}
     return router, skmap
 
@@ -230,23 +277,35 @@ def parse_skill_md(path: Path, source: str) -> Skill | None:
     )
 
 
-def load_all_skills() -> list[Skill]:
+def load_all_skills(*, manifest_log_prefix: str = "[skillforge]") -> list[Skill]:
     """Load from bundled dir first, then user dir (user overrides bundled by name)."""
     by_name: dict[str, Skill] = {}
-    for src_dir, label in [(BUNDLED_SKILLS, "bundled"), (USER_SKILLS, "user")]:
+    strict_manifest = skill_manifest_strict_exclusion()
+    for src_dir, label in [(bundled_skills_dir(), "bundled"), (user_skills_dir(), "user")]:
         if not src_dir.exists():
             continue
         for skill_md in sorted(src_dir.glob("*/SKILL.md")):
             s = parse_skill_md(skill_md, label)
-            if s:
-                by_name[s.name] = s  # later sources override
+            if not s:
+                print(f"{manifest_log_prefix} SKIP unreadable SKILL.md: {skill_md}", file=sys.stderr)
+                continue
+            errs, warns = validate_skill_manifest(s, skill_md)
+            for w in warns:
+                print(f"{manifest_log_prefix} manifest [{label}/{s.name}] warning: {w}", file=sys.stderr)
+            if errs:
+                for e in errs:
+                    suf = "(excluded from catalog)" if strict_manifest else "(loaded anyway)"
+                    print(f"{manifest_log_prefix} manifest [{label}/{s.name}] error: {e} {suf}", file=sys.stderr)
+                if strict_manifest:
+                    continue
+            by_name[s.name] = s  # later sources override
     return list(by_name.values())
 
 
 def iter_skill_md_paths() -> list[Path]:
     """All discovered SKILL.md paths in load order (bundled, then user overrides)."""
     paths: list[Path] = []
-    for src_dir in (BUNDLED_SKILLS, USER_SKILLS):
+    for src_dir in (bundled_skills_dir(), user_skills_dir()):
         if not src_dir.exists():
             continue
         for skill_md in sorted(src_dir.glob("*/SKILL.md")):
@@ -369,10 +428,30 @@ def set_skill_disabled(con, name, disabled: bool, user_id=""):
 
 # ---------- Router ----------
 class Router:
-    def __init__(self, skills, embed_model, anthropic: Optional[AsyncAnthropic]):
+    def __init__(
+        self,
+        skills,
+        embed_model,
+        router_llm: AnthropicRouterLLM | OpenAIRouterLLM | None,
+    ):
         self.skills = skills
         self.embed_model = embed_model
-        self.anthropic = anthropic
+        self.router_llm = router_llm
+
+    def _pick_router_llm_model(self, *, rerank: bool) -> str:
+        if isinstance(self.router_llm, OpenAIRouterLLM):
+            return self.router_llm.default_model
+        rerank_override = os.getenv("SKILLFORGE_HAIKU_RERANK_MODEL", "").strip()
+        if rerank and rerank_override:
+            return rerank_override
+        return ROUTER_MODEL
+
+    @property
+    def anthropic(self) -> Optional[AsyncAnthropic]:
+        """AsyncAnthropic client when the active router backend is Anthropic (MCP reload path)."""
+        if isinstance(self.router_llm, AnthropicRouterLLM):
+            return self.router_llm.client
+        return None
         self.context_mode = SKILLFORGE_CONTEXT_MODE if SKILLFORGE_CONTEXT_MODE in (
             "chunks",
             "full_body",
@@ -736,7 +815,7 @@ class Router:
     ) -> list[tuple[Skill, float]]:
         if (
             not candidates
-            or self.anthropic is None
+            or self.router_llm is None
             or not _env_truthy("SKILLFORGE_HAIKU_RERANK", "0")
         ):
             return candidates
@@ -772,14 +851,14 @@ class Router:
             f"Routing focus:\n{route_query}{hist}\n\nCandidates:\n" + "\n".join(lines)
         )
         try:
-            rerank_model = os.getenv("SKILLFORGE_HAIKU_RERANK_MODEL", "").strip() or ROUTER_MODEL
-            resp = await self.anthropic.messages.create(
-                model=rerank_model,
-                max_tokens=500,
+            rerank_model = self._pick_router_llm_model(rerank=True)
+            assert self.router_llm is not None
+            text = await self.router_llm.complete(
                 system=sys,
-                messages=[{"role": "user", "content": user}],
+                user=user,
+                max_tokens=500,
+                model=rerank_model,
             )
-            text = resp.content[0].text.strip()
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):
@@ -816,7 +895,7 @@ class Router:
         route_query: str | None = None,
     ):
         rq = (route_query if route_query is not None else prompt) or ""
-        if self.anthropic is None:
+        if self.router_llm is None:
             return self.pick_final_embedding_only(candidates)
         if not candidates:
             return [], "no candidates available"
@@ -849,13 +928,14 @@ class Router:
             f"\n\nCandidate skills:\n{catalog}"
         )
         try:
-            resp = await self.anthropic.messages.create(
-                model=ROUTER_MODEL,
-                max_tokens=400,
+            pick_model = self._pick_router_llm_model(rerank=False)
+            assert self.router_llm is not None
+            text = await self.router_llm.complete(
                 system=sys,
-                messages=[{"role": "user", "content": user}],
+                user=user,
+                max_tokens=400,
+                model=pick_model,
             )
-            text = resp.content[0].text.strip()
             if text.startswith("```"):
                 text = text.split("```")[1]
                 if text.startswith("json"):
@@ -962,7 +1042,7 @@ async def run_route_turn(
     host_router = SKILLFORGE_ROUTER_MODE == "host"
 
     if host_router and not picked_names_from_host_supplied:
-        k = max(3, min(TOP_K_CANDIDATES, int(os.getenv("SKILLFORGE_HOST_PICK_MAX", "12"))))
+        k = host_pick_max_candidates(top_k_cap=TOP_K_CANDIDATES)
         facets = router.shortlist_with_facets(
             route_query,
             con,
@@ -1066,7 +1146,7 @@ async def run_route_turn(
     else:
         names_before = [s.name for s, _ in candidates]
         rerank_eligible = bool(
-            candidates and router.anthropic is not None and _env_truthy("SKILLFORGE_HAIKU_RERANK", "0")
+            candidates and router.router_llm is not None and _env_truthy("SKILLFORGE_HAIKU_RERANK", "0")
         )
         candidates = await router.rerank_candidates_haiku(route_query, conversation, candidates)
         names_after = [s.name for s, _ in candidates]
@@ -1074,6 +1154,7 @@ async def run_route_turn(
         picked_names, reasoning = await router.pick_final(
             prompt, conversation, candidates, route_query=route_query
         )
+    picked_names, pick_diversify_meta = diversify_picked_names(picked_names, router._by_name)
     picked_names, policy_audit = merge_policy_includes(
         prompt,
         picked_names,
@@ -1190,10 +1271,10 @@ async def run_route_turn(
 
     if picked_names_from_host_supplied:
         pick_path = "host_picked"
-    elif router.anthropic is None or SKILLFORGE_ROUTER_MODE == "embedding":
+    elif router.router_llm is None or SKILLFORGE_ROUTER_MODE == "embedding":
         pick_path = "embedding_top"
     else:
-        pick_path = "haiku_pick"
+        pick_path = "llm_pick"
 
     rules_list = policies_cfg.get("rules") if isinstance(policies_cfg.get("rules"), list) else []
     route_quality = build_route_quality(
@@ -1209,6 +1290,7 @@ async def run_route_turn(
         host_shortlist_only=False,
         haiku_rerank_applied=haiku_rerank_applied,
         pick_path=pick_path,
+        pick_diversify=pick_diversify_meta,
     )
 
     reasoning_out = reasoning
