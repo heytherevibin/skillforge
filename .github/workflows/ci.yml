@@ -59,8 +59,8 @@ jobs:
         env:
           SKILLFORGE_BUNDLED_SKILLS: ${{ github.workspace }}/skills
         run: |
-          cd python && PYTHONPATH=. python3 -m app.health_cli --quick
-          cd python && PYTHONPATH=. python3 -m app.eval_cli --fixture fixtures/route_eval/smoke.json
+          cd python && PYTHONPATH=. python3 -m app.health_cli --quick && \
+          PYTHONPATH=. python3 -m app.eval_cli --fixture fixtures/route_eval/smoke.json
 
       - name: Verify skills bundle
         run: |

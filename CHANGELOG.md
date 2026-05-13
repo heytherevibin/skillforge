@@ -2,7 +2,7 @@
 
 ## 0.10.0
 
-- **CI:** Minimum bundled **`SKILL.md`** count is configured via **`ci/bundle-gate.json`** (`minSkillMdFiles`); **`.github/workflows/ci.yml`** reads that file. The **`ci/`** directory is included in the published package **`files`** list for transparency.
+- **CI:** Minimum bundled **`SKILL.md`** count is configured via **`ci/bundle-gate.json`** (`minSkillMdFiles`); **`.github/workflows/ci.yml`** reads that file. The **`ci/`** directory is included in the published package **`files`** list for transparency. Health + **route-eval** step chains both commands under a single **`cd python`** so the second command does not run from **`python/python`**.
 - **MCP `_meta`:** **`schema_version` 1.7** — optional **`routing_overlay`** (project exclude / boost / notes audit). **1.6** — optional **`feedback_effect`** (learned-weight transparency after each route). **1.5** — optional **`route_quality`** (shortlist, hybrid, policy/session signals). Implemented in **`app/mcp_contract.py`** (see constant **`MCP_RESPONSE_SCHEMA_VERSION`**).
 - **Project routing overlay:** optional **`exclude_skills`**, **`routing_boosts`**, **`project_notes`** (and aliases) in the same JSON document as regex **`rules`** — parsed by **`app/route_policies.py`**, applied in **`Router`** shortlists; **`project_notes`** require **`project_root`** to apply.
 - **Operator CLIs:** **`skillforge health`** (`python/app/health_cli.py`), **`skillforge route-eval`** (`eval_cli` + fixtures under **`python/fixtures/route_eval/`**), **`skillforge weights export|import`** (`weights_cli.py`). CI runs **health --quick** and embedding **route-eval** with **`SKILLFORGE_BUNDLED_SKILLS`** set to the workspace skills tree.
