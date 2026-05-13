@@ -4,8 +4,10 @@ Adaptive skill orchestrator for Claude. Plug-and-play routing layer that picks t
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-npx skillforge
+npx -y @heytherevibin/skillforge
 ```
+
+**Install globally (optional):** `npm install -g @heytherevibin/skillforge` — then run `skillforge` as below.
 
 That's it. First run sets up a Python environment automatically (~2 min), then it's instant. Comes with 223 pre-built skills covering coding, security, research, AI engineering, content, frontend, backend, and a dozen specialized domains.
 
@@ -16,7 +18,7 @@ That's it. First run sets up a Python environment automatically (~2 min), then i
 - **Learning loop**: tracks which skills got referenced or thumbs'd. Weights bias future routing decisions per user.
 - **Live dashboard**: watch routing decisions stream in, inspect learned weights, disable noisy skills.
 - **Bring your own skills**: drop any `SKILL.md` folder, or install entire packs from GitHub.
-- **MCP server mode**: use skillforge directly from Claude Desktop, Claude Code, Cursor, and any MCP-aware client — no HTTP server needed.
+- **MCP server mode**: use skillforge from Claude Desktop, Claude Code, or any other MCP-aware client — no HTTP server needed.
 - **Multi-user mode**: bearer-token auth with per-user learned weights and isolated sessions.
 
 ## Run modes
@@ -28,7 +30,7 @@ skillforge chat                  # interactive chat in this terminal
 skillforge mcp                   # MCP stdio server (for Claude Desktop, etc.)
 ```
 
-### Using as an MCP server (Claude Desktop, Cursor, Claude Code)
+### Using as an MCP server (Claude Desktop, Claude Code, and other MCP hosts)
 
 Add this to your MCP config (e.g. `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
@@ -37,7 +39,7 @@ Add this to your MCP config (e.g. `~/Library/Application Support/Claude/claude_d
   "mcpServers": {
     "skillforge": {
       "command": "npx",
-      "args": ["-y", "skillforge", "mcp"],
+      "args": ["-y", "@heytherevibin/skillforge", "mcp"],
       "env": {
         "ANTHROPIC_API_KEY": "sk-ant-..."
       }
@@ -232,6 +234,15 @@ All endpoints except `/`, `/healthz`, and `/ws` require `Authorization: Bearer <
 ```
 
 `skillforge reset` wipes the database. `rm -rf ~/.skillforge` nukes everything including the venv.
+
+## Maintainers: CI, releases, and npm
+
+Published package: **`@heytherevibin/skillforge`** (scoped; install with `npx -y @heytherevibin/skillforge`).
+
+- **CI** workflow runs on push/PR to `main` (and can be run manually under **Actions → CI → Run workflow**).
+- **Release** workflow runs when you push a tag matching **`v*`** (e.g. `v0.2.2`). The tag **minus the `v` prefix** must exactly match the **`version` field in `package.json`**, or the job will fail.
+- Setup for **`NPM_TOKEN`**, recovering from stale tags, and local checks: [RELEASING.md](RELEASING.md).
+- Contributing and branch-protection expectations: [CONTRIBUTING.md](CONTRIBUTING.md). Security contact: [SECURITY.md](SECURITY.md).
 
 ## License
 

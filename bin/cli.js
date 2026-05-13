@@ -30,6 +30,7 @@ const os = require('os');
 const packs = require('../lib/packs');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
+const NPM_PKG_NAME = require(path.join(PKG_ROOT, 'package.json')).name;
 const CONFIG_DIR = path.join(os.homedir(), '.skillforge');
 const VENV_DIR = path.join(CONFIG_DIR, 'venv');
 const DATA_DIR = path.join(CONFIG_DIR, 'data');
@@ -395,7 +396,7 @@ ${c.bold('Config dir:')} ${CONFIG_DIR}
 
 ${c.bold('MCP integration:')}
   To use skillforge from Claude Desktop, add this to your config:
-    {"mcpServers": {"skillforge": {"command": "npx", "args": ["-y", "skillforge", "mcp"]}}}
+    ${JSON.stringify({ mcpServers: { skillforge: { command: 'npx', args: ['-y', NPM_PKG_NAME, 'mcp'] } } })}
 `);
 }
 

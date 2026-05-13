@@ -21,7 +21,11 @@
     "python/",
     "skills/",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "RELEASING.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md"
   ],
   "engines": {
     "node": ">=18.0.0"
