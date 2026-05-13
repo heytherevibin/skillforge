@@ -1,0 +1,32 @@
+{
+  "name": "@heytherevibin/skillforge",
+  "version": "0.2.0",
+  "description": "Adaptive skill orchestrator for Claude. Plug-and-play routing layer that picks the right skills for each prompt, learns from usage, and re-routes mid-conversation.",
+  "keywords": [
+    "claude",
+    "skills",
+    "agent",
+    "orchestrator",
+    "anthropic",
+    "llm",
+    "routing"
+  ],
+  "license": "MIT",
+  "bin": {
+    "skillforge": "bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "python/",
+    "skills/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "test": "node bin/cli.js --help"
+  }
+}
