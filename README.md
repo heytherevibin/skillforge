@@ -326,7 +326,7 @@ Global default when no project root:
 ## Releases and maintainers
 
 - **Continuous integration:** `.github/workflows/ci.yml` (push and pull request to **`main`**).
-- **Release & npm publish:** **Skillforge release** workflow on **semantic tags** `v*` matching **`package.json`** **`version`** (e.g. **`v0.1.0`** ↔ **`0.1.0`**). GitHub releases are titled **`Skillforge <tag>`**.
+- **Release & npm publish:** **Skillforge release** runs when you push tag **`vX.Y.Z`** and **`package.json`** **`version`** is exactly **`X.Y.Z`** (e.g. **`v0.2.1`** ↔ **`0.2.1`**). That same number is what **`npm publish`** ships. GitHub releases are titled **`Skillforge <tag>`**.
 - **Procedure and npm tokens:** **[RELEASING.md](RELEASING.md)** (granular npm access tokens, **Bypass 2FA** for CI publish where applicable).
 - **License:** MIT — see **[LICENSE](LICENSE)**.
 

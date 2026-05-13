@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Same code as **0.2.0**. **npm never allows reusing a version** after it has been published once—even if you **unpublish** it and only **0.1.0** remains visible. The registry still blocks **`0.2.0`**; ship **`0.2.1`** (or higher) instead.
+
 ## 0.2.0
 
 - **`skillforge route`**: CLI parity with MCP **`route_skills`** (same `build_router_and_skills` + `run_route_turn` pipeline); optional **`--project-root`**, **`--session-id`**, **`--user-id`**, **`--json-meta`**.

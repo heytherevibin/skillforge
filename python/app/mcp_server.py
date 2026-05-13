@@ -173,7 +173,7 @@ class MCPServer:
         return {
             "protocolVersion": "2024-11-05",
             "capabilities": caps,
-            "serverInfo": {"name": "skillforge", "version": "0.2.0"},
+            "serverInfo": {"name": "skillforge", "version": "0.2.1"},
         }
 
     def handle_tools_list(self, params):
