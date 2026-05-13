@@ -641,7 +641,7 @@ function showHelp() {
         '(SKILLFORGE_SKIP_CURSOR_SETUP, SKILLFORGE_SKIP_CLAUDE_CODE_SETUP).',
     ),
   );
-  log(`\n${c.bold('Documentation')}  package README (${NPM_PKG_NAME})`);
+  log(`\n${c.bold('Documentation')}  README.md + docs/ · npm/GitHub (${NPM_PKG_NAME})`);
 }
 
 // ---- main ----
