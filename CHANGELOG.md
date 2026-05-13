@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.7
+
+- **Python router:** Restore **`Router.__init__`** so skill embeddings, **`_by_name`**, hybrid/BM25, and chunk indexing initialize correctly (fixes **`AttributeError: 'Router' object has no attribute '_by_name'`** in **`route-eval`** / **`run_route_turn`** when router setup was mistakenly unreachable behind the **`anthropic`** accessor).
+- **Docs:** **`README`**, **`docs/`** guides, and **`RELEASING`** prose align release line **0.11.7** with **`package.json`**; MCP **`serverInfo.version`** sourcing is documented as **`python/app/npm_pkg_version.py`** (**`published_package_version()`**), not a duplicate field in **`mcp_server.py`**.
+
 ## 0.11.6
 
 - **Documentation hub:** Added [`docs/`](docs/) with instructional guides (**[docs/README.md](docs/README.md)** lists them).

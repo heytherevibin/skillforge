@@ -28,14 +28,15 @@ You need the **`NPM_TOKEN`** repository secret.
 
 Create one at [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens) (**Generate New Token** → **Granular Access Token**). Optionally explore [**trusted publishing** (OIDC)](https://docs.npmjs.com/trusted-publishers/) later to avoid long-lived tokens.
 
-1. On `main`, set **`version`** in `package.json` to the version you are releasing (must be **unused** on npm — e.g. `0.11.0`). The **README badge** is driven by [Shields **GitHub package.json version**](https://shields.io/badges/git-hub-package-json-version) for `heytherevibin/skillforge` (**default branch**)—it tracks this same field after you push; **no manual README edit** for semver.
-2. Match **MCP** `serverInfo.version` in `python/app/mcp_server.py` (must equal `package.json`) and add a **`CHANGELOG.md`** section for that version.
+1. On `main`, set **`version`** in **`package.json`** to the version you are releasing (must be **unused** on npm). Bump **[`CHANGELOG.md`](CHANGELOG.md)** with a **`## X.Y.Z`** section for that number. Reflect that **semver** anywhere user-facing prose names the shipping line (**[`README`](README.md)**, **[`docs/README`](docs/README.md)**, **[`getting-started`](docs/getting-started.md)**, **[`docs/mcp-integration`](docs/mcp-integration.md)**, …). Shield URLs track **published** artefacts and **`main`** automatically; only **plain-text version numbers** need a manual bump.
+2. **MCP `serverInfo.version`** matches **`package.json`** automatically (**[`python/app/npm_pkg_version.py`](python/app/npm_pkg_version.py)** **`published_package_version()`** — used from **`python/app/mcp_server.py`**). Operators can override via **`SKILLFORGE_MCP_SERVER_VERSION`**; do **not** hand-edit a second copy of semver in Python.
 3. Commit and **`git push origin main`**. Wait for **CI** to pass.
-4. Create a tag whose name is **`v` + that exact version**, e.g.:  
-   `git tag v0.11.0 && git push origin v0.11.0`
+4. Tag **`v` + the value of **`package.json` `version`**, push to **`origin`**, e.g.:  
+   `git tag v0.11.7 && git push origin v0.11.7`  
+   (**Replace **`v0.11.7`** with your semver** when releasing a newer number.)
 5. Open **Actions → Skillforge release**. The job will **fail the version check** if the tag does not match `package.json`.
 6. Confirm on npm: `npm view @heytherevibin/skillforge version`  
-   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.11.0`**) and the `.tgz` asset.
+   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.11.7`**) and the `.tgz` asset.
 
 Scoped packages require a **public** publish; the workflow already runs `npm publish --access public`.
 

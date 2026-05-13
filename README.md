@@ -10,7 +10,7 @@
 
 **Skillforge** is a **local-first** SKILL.md orchestration layer: embeddings pick a **small routed set** per task (optional hybrid + LLM stages), SQLite stores **sessions, learned weights, and events**, optional **project RAG** augments prompts, and the **production surface** is **stdio MCP**. A **Node** CLI (**`skillforge`**) bootstraps a managed **Python venv** under **`~/.skillforge/venv`**, merges **`~/.skillforge/env`**, mirrors MCP behaviours in **`skillforge route`**, **`skillforge tools`**, **`skillforge agent`**, and exposes operator CLIs (**`health`**, **`events`**, **`weights`**).
 
-**Semantic versions** should align across **`package.json`**, git tags (**`vX.Y.Z`**), MCP **`initialize.serverInfo.version`**, **npm tarball**, and the **GitHub Release** artifact—see [`RELEASING.md`](RELEASING.md). The **`package.json`** shield tracks **`main`**; **`npm`** / **`release`** shields track **published** artefacts and may briefly lag immediately after tagging.
+**Semantic versions** should align across **`package.json`**, git tags (**`vX.Y.Z`**), MCP **`initialize.serverInfo.version`**, **npm tarball**, and the **GitHub Release** artifact—see [`RELEASING.md`](RELEASING.md). **Published line on `main`:** **`0.11.7`** (same value in **[`package.json` `version`](package.json#L3)** and **[`CHANGELOG`](CHANGELOG.md)** top section). The **`package.json`** shield tracks **`main`**; **`npm`** / **`release`** shields track **published** artefacts and may briefly lag immediately after tagging.
 
 ---
 

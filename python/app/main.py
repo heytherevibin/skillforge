@@ -437,25 +437,11 @@ class Router:
         self.skills = skills
         self.embed_model = embed_model
         self.router_llm = router_llm
-
-    def _pick_router_llm_model(self, *, rerank: bool) -> str:
-        if isinstance(self.router_llm, OpenAIRouterLLM):
-            return self.router_llm.default_model
-        rerank_override = os.getenv("SKILLFORGE_HAIKU_RERANK_MODEL", "").strip()
-        if rerank and rerank_override:
-            return rerank_override
-        return ROUTER_MODEL
-
-    @property
-    def anthropic(self) -> Optional[AsyncAnthropic]:
-        """AsyncAnthropic client when the active router backend is Anthropic (MCP reload path)."""
-        if isinstance(self.router_llm, AnthropicRouterLLM):
-            return self.router_llm.client
-        return None
-        self.context_mode = SKILLFORGE_CONTEXT_MODE if SKILLFORGE_CONTEXT_MODE in (
-            "chunks",
-            "full_body",
-        ) else "chunks"
+        self.context_mode = (
+            SKILLFORGE_CONTEXT_MODE
+            if SKILLFORGE_CONTEXT_MODE in ("chunks", "full_body")
+            else "chunks"
+        )
         self._by_name: dict[str, Skill] = {s.name: s for s in skills}
         self._hybrid_mode = ROUTER_HYBRID_MODE
         self._hybrid_alpha = ROUTER_HYBRID_ALPHA
@@ -514,6 +500,21 @@ class Router:
                 f"context_mode={self.context_mode}; router_hybrid={self._hybrid_mode}",
                 file=sys.stderr,
             )
+
+    def _pick_router_llm_model(self, *, rerank: bool) -> str:
+        if isinstance(self.router_llm, OpenAIRouterLLM):
+            return self.router_llm.default_model
+        rerank_override = os.getenv("SKILLFORGE_HAIKU_RERANK_MODEL", "").strip()
+        if rerank and rerank_override:
+            return rerank_override
+        return ROUTER_MODEL
+
+    @property
+    def anthropic(self) -> Optional[AsyncAnthropic]:
+        """AsyncAnthropic client when the active router backend is Anthropic (MCP reload path)."""
+        if isinstance(self.router_llm, AnthropicRouterLLM):
+            return self.router_llm.client
+        return None
 
     def _sparse_scores(self, route_query: str) -> np.ndarray:
         if not _hybrid_mode_active(self._hybrid_mode):

@@ -6,7 +6,9 @@ Skillforge speaks **stdio MCP JSON-RPC**. Tool definitions (**name**, **`inputSc
 
 Anything that writes stray bytes to **stdout** breaks MCP hosts. **`skillforge mcp`** never logs JSON-RPC payloads to stdout; logs go to **stderr**.
 
-## Default routing (**host**, Skillforge ≥ 0.11.0)
+## Default routing (**host**, Skillforge ≥ 0.11.0 — use **≥ 0.11.7** if you rely on **`route-eval`** / full router init stability)
+
+Stable **`Router`** embedding + **`_by_name`** initialization ship in **[0.11.7](../CHANGELOG.md)**; stay on **`0.11.7`** or newer for CI-aligned routing.
 
 When **`SKILLFORGE_ROUTER_MODE`** is **unset**:
 

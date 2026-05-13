@@ -1,6 +1,6 @@
 {
   "name": "@heytherevibin/skillforge",
-  "version": "0.11.6",
+  "version": "0.11.7",
   "description": "SKILL.md orchestration for AI agents: MCP-first routing with local embeddings, optional LLM stages, project RAG, policy overlays, portable learning state, and auditable telemetry.",
   "keywords": [
     "claude",
