@@ -10,7 +10,7 @@ jobs:
       
       - uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
       
       - name: Check JavaScript syntax
         run: |
@@ -31,9 +31,9 @@ jobs:
       
       - name: Verify skills
         run: |
-          SKILLS=$(find skills -name 'SKILL.md' | wc -l)
+          SKILLS=$(find skills -name 'SKILL.md' | wc -l | tr -d ' ')
           echo "✓ Found $SKILLS skills"
-          if [ $SKILLS -lt 200 ]; then
+          if [ "$SKILLS" -lt 200 ]; then
             echo "✗ Expected at least 200 skills"
             exit 1
           fi
