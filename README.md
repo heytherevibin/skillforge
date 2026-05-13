@@ -6,7 +6,9 @@
   <a href="https://github.com/heytherevibin/skillforge/actions/workflows/ci.yml"><img src="https://github.com/heytherevibin/skillforge/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
-**Skillforge** is a **skill orchestration co-tool for Claude** (and other MCP hosts). It keeps a catalog of **`SKILL.md`** skills, **routes** the few that match each task using **local embeddings** and an optional **Haiku** step, and returns their bodies for **injection into the host model**. Optional **SQLite** learning improves routing over time.
+**Skillforge** is a **skill orchestration co-tool for Claude** (and other MCP hosts). It keeps a catalog of **`SKILL.md`** skills, **routes** the few that match each task using **local embeddings** (skill **cards**: title, description, optional **`triggers` / `anti_triggers`**), optional **hybrid** keyword / **BM25** fusion, an optional **Haiku rerank** on the shortlist, and an optional **Haiku** final pick — then returns matching bodies for **injection into the host model**. Optional **conversation** turns can feed the **shortlist** query when **`SKILLFORGE_ROUTER_CONV_MAX_TURNS`** is greater than **`0`**. Optional **regex route policies** append **`include`** skills after the router. Optional **SQLite** learning improves routing over time.
+
+**Current npm/package version:** **`0.8.0`** (see **[CHANGELOG.md](CHANGELOG.md)**). The shields.io **npm** badge above tracks whatever is latest on **npm** (publish may trail a Git tag by a short interval).
 
 **Primary interface:** **stdio MCP** (`skillforge mcp`) — add it to Claude Desktop, Cursor, or Claude Code.
 
@@ -26,11 +28,13 @@
     - [MCP response contract](#mcp-response-contract)
 - [Skills and packs](#skills-and-packs)
 - [Routing pipeline](#routing-pipeline)
+- [Route policies (optional)](#route-policies-optional)
 - [Configuration](#configuration)
 - [Local data and operations](#local-data-and-operations)
 - [Security considerations](#security-considerations)
 - [Contributing and governance](#contributing-and-governance)
 - [Releases and maintainers](#releases-and-maintainers)
+- [Changelog](CHANGELOG.md)
 - [License](#license)
 
 ---
@@ -40,7 +44,7 @@
 | Capability | Description |
 |------------|-------------|
 | **Focused context** | Injects only a small set of skill documents per turn instead of the full catalog. |
-| **Hybrid routing** | Embedding shortlist plus a fast **Claude Haiku** routing step for final selection. |
+| **Hybrid routing** | Dense embedding shortlist, optional **keyword** or **BM25** fusion (`SKILLFORGE_ROUTER_HYBRID`), optional **Haiku rerank** (`SKILLFORGE_HAIKU_RERANK`), plus **Haiku** final pick — or **embedding-only** mode without the key. |
 | **Adaptation** | Re-routes when the conversation topic shifts (configurable threshold). |
 | **Learning loop** | Optional weights from usage and explicit feedback improve routing over time. |
 | **Observability** | **`skillforge events`**: snapshots of **usage** + **active sessions**, **`--watch`** for realtime; **`--verbose`** for route detail. No browser UI. |
@@ -154,9 +158,9 @@ With **Haiku** routing (uses your Anthropic key in the MCP process):
 
 | Tool | Purpose |
 |------|---------|
-| `route_skills` | Returns routed **`SKILL.md`** context (chunks or full body). Pass **`project_root`** for per-repo SQLite under **`.skillforge/orchestrator.db`**. Optional **`include_project_rag`** (after **`skillforge index --project-root=…`**), **`session_id`**, **`user_id`** / **`SKILLFORGE_MCP_USER_ID`**, or env **`SKILLFORGE_PROJECT_ROOT`**. Route **`event.policy`** in SQLite logs policy merge audit when rules apply. |
+| `route_skills` | Returns routed **`SKILL.md`** context (chunks or full body). Pass **`prompt`** and optional **`conversation`** (array of `{role, content}`) so the shortlist can use recent turns when **`SKILLFORGE_ROUTER_CONV_MAX_TURNS`** is greater than **`0`**. **`project_root`** selects per-repo SQLite under **`.skillforge/orchestrator.db`**. Optional **`include_project_rag`** (after **`skillforge index --project-root=…`**), **`session_id`**, **`user_id`** / **`SKILLFORGE_MCP_USER_ID`**, or env **`SKILLFORGE_PROJECT_ROOT`**. Route **`event.policy`** in SQLite logs policy merge audit when rules apply. |
 | `search_skills` | Embedding-only shortlist for a **`query`** (scores + description snippets); does not run Haiku or mutate sessions. Optional **`limit`** (max 50). |
-| `explain_route` | Same routing signal as **`route_skills`** without writing SQLite (**`picked_before_policy`**, **`picked_after_policy`**, shortlist facets, policy audit). For debugging. |
+| `explain_route` | Same routing path as **`route_skills`** (**`prompt`**, optional **`conversation`**, hybrid shortlist, optional Haiku rerank + pick) **without** writing SQLite — returns **`picked_before_policy`**, **`picked_after_policy`**, shortlist facets (including **`sparse_signal`** / **`router_hybrid`** when hybrid is on), and policy audit. For debugging. |
 | `get_skill` | Fetch one catalog skill by **`skill_name`**; **`format`**: **`full`** or **`summary`**; optional **`max_chars`**. |
 | `list_skills` | Catalog overview; optional **`user_id`** scopes usage stats. |
 | `skill_feedback` | Feedback for the learning loop; optional **`user_id`**, **`session_id`** (stored with events). |
@@ -358,6 +362,7 @@ Global default when no project root:
 
 ## Releases and maintainers
 
+- **Changelog:** **[CHANGELOG.md](CHANGELOG.md)** — version-by-version notes (e.g. **0.8.0** smarter routing, skill cards, **`rank-bm25`**).
 - **Continuous integration:** `.github/workflows/ci.yml` (push and pull request to **`main`**).
 - **Release & npm publish:** **Skillforge release** runs when you push tag **`vX.Y.Z`** and **`package.json`** **`version`** is exactly **`X.Y.Z`** (e.g. **`v0.2.1`** ↔ **`0.2.1`**). That same number is what **`npm publish`** ships. GitHub releases are titled **`Skillforge <tag>`**.
 - **Procedure and npm tokens:** **[RELEASING.md](RELEASING.md)** (granular npm access tokens, **Bypass 2FA** for CI publish where applicable).
