@@ -5,7 +5,7 @@
 | Workflow | File | When it runs |
 |----------|------|----------------|
 | **CI** | [.github/workflows/ci.yml](.github/workflows/ci.yml) | Every **push** and **pull request** to `main`; also **`workflow_dispatch`** (run manually from the Actions tab) |
-| **Release** | [.github/workflows/release.yml](.github/workflows/release.yml) | When a **`v*`** tag is **pushed** to the repository (e.g. `v0.2.2`) |
+| **Release** | [.github/workflows/release.yml](.github/workflows/release.yml) | When a **`v*`** tag is **pushed** to the repository (e.g. `v0.1.0`) |
 
 In the GitHub UI, open **Actions** and look for **CI** and **Release** (not the older “publish to npm” name).
 
@@ -22,15 +22,23 @@ You need the **`NPM_TOKEN`** repository secret.
 
 Create one at [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens) (**Generate New Token** → **Granular Access Token**). Optionally explore [**trusted publishing** (OIDC)](https://docs.npmjs.com/trusted-publishers/) later to avoid long-lived tokens.
 
-1. On `main`, set **`version`** in `package.json` to the version you are releasing (e.g. `0.2.2`).
+1. On `main`, set **`version`** in `package.json` to the version you are releasing (e.g. `0.1.0`).
 2. Commit and **`git push origin main`**. Wait for **CI** to pass.
 3. Create a tag whose name is **`v` + that exact version**:  
-   `git tag v0.2.2 && git push origin v0.2.2`
-4. Open **Actions → Release**. The job will **fail the version check** if `v0.2.2` does not match `package.json` `0.2.2`.
+   `git tag v0.1.0 && git push origin v0.1.0`
+4. Open **Actions → Release**. The job will **fail the version check** if `v0.1.0` does not match `package.json` `0.1.0`.
 5. Confirm on npm: `npm view @heytherevibin/skillforge version`  
    Confirm the **GitHub Release** includes the `.tgz` asset.
 
 Scoped packages require a **public** publish; the workflow already runs `npm publish --access public`.
+
+## Resetting npm and GitHub for a clean **0.1.0** line
+
+If older versions (e.g. **0.2.x**) were published and you want the public story to start at **0.1.0**:
+
+1. **npm:** Run `npm view @heytherevibin/skillforge versions --json`, then `npm unpublish @heytherevibin/skillforge@<version>` per published version you want removed ([unpublish policy](https://docs.npmjs.com/unpublishing-packages-from-the-registry) may block some). If unpublish fails, use `npm deprecate` or contact npm support. You **cannot** publish **0.1.0** if that version still exists on the registry—use **0.1.1** instead if needed.
+2. **GitHub:** Delete old **Releases**; delete remote tags, e.g. `git push origin :refs/tags/v0.2.2` (repeat for each).
+3. Set **`package.json`** **`version`** to **`0.1.0`** on **`main`**, push, then `git tag v0.1.0 && git push origin v0.1.0`.
 
 ## Recover if a tag exists but npm was never updated
 
@@ -41,10 +49,10 @@ Typical causes: the tag was created before **Release** existed on `main`, the ta
 1. Ensure `.github/workflows/release.yml` on `main` is the current one and **`package.json` `version`** matches the tag (without `v`).
 2. Delete the tag locally and on the remote, then push it again so GitHub emits a new `push` event for that tag:  
    ```bash
-   git tag -d v0.2.1
-   git push origin :refs/tags/v0.2.1
-   git tag v0.2.1
-   git push origin v0.2.1
+   git tag -d v0.1.0
+   git push origin :refs/tags/v0.1.0
+   git tag v0.1.0
+   git push origin v0.1.0
    ```
 
 **Option B — new version (cleanest)**

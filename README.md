@@ -188,7 +188,7 @@ Maintenance:
 
 ## Requirements
 
-- **Node.js 18+**
+- **Node.js 18+** (GitHub **CI** currently runs on **Node 22**)
 - **Python 3.10+** on PATH (for the embedding model and orchestration backend)
 - **Anthropic API key** in `ANTHROPIC_API_KEY`
 
@@ -240,7 +240,7 @@ All endpoints except `/`, `/healthz`, and `/ws` require `Authorization: Bearer <
 Published package: **`@heytherevibin/skillforge`** (scoped; install with `npx -y @heytherevibin/skillforge`).
 
 - **CI** workflow runs on push/PR to `main` (and can be run manually under **Actions → CI → Run workflow**).
-- **Release** workflow runs when you push a tag matching **`v*`** (e.g. `v0.2.2`). The tag **minus the `v` prefix** must exactly match the **`version` field in `package.json`**, or the job will fail.
+- **Release** workflow runs when you push a tag matching **`v*`** (e.g. `v0.1.0`). The tag **minus the `v` prefix** must exactly match the **`version` field in `package.json`**, or the job will fail.
 - Setup for **`NPM_TOKEN`**, recovering from stale tags, and local checks: [RELEASING.md](RELEASING.md).
 - Contributing and branch-protection expectations: [CONTRIBUTING.md](CONTRIBUTING.md). Security contact: [SECURITY.md](SECURITY.md).
 
