@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Verify package.json
+        run: node -e "JSON.parse(require('fs').readFileSync('package.json','utf8')); console.log('package.json OK')"
+
+      - name: Check JavaScript syntax
+        run: |
+          node --check bin/cli.js
+          node --check lib/packs.js
+
+      - name: Run npm test script
+        run: npm test
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check Python syntax
+        run: |
+          for f in python/app/main.py python/app/cli.py python/app/mcp_server.py python/app/auth.py; do
+            python3 -m py_compile "$f"
+          done
+
+      - name: Verify skills bundle
+        run: |
+          SKILLS=$(find skills -name 'SKILL.md' -print | wc -l | tr -d ' ')
+          echo "Found $SKILLS SKILL.md files"
+          if [ "$SKILLS" -lt 200 ]; then
+            echo "::error::Expected at least 200 skills, found $SKILLS"
+            exit 1
+          fi
