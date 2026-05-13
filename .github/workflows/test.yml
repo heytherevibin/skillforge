@@ -1,0 +1,29 @@
+name: test
+
+on: [push, pull_request]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - run: npm ci --silent 2>&1 | grep -v "^npm notice"
+      - run: node --check bin/cli.js
+      - run: node --check lib/packs.js
+      - run: npm test
+
+  python-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - run: |
+          python3 -m py_compile python/app/main.py
+          python3 -m py_compile python/app/cli.py
+          python3 -m py_compile python/app/mcp_server.py
+          python3 -m py_compile python/app/auth.py
