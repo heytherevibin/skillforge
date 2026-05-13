@@ -240,7 +240,7 @@ All endpoints except `/`, `/healthz`, and `/ws` require `Authorization: Bearer <
 Published package: **`@heytherevibin/skillforge`** (scoped; install with `npx -y @heytherevibin/skillforge`).
 
 - **CI** workflow runs on push/PR to `main` (and can be run manually under **Actions → CI → Run workflow**).
-- **skillforge release** workflow runs when you push a tag matching **`v*`** (e.g. `v0.1.0`). The tag **minus the `v` prefix** must exactly match the **`version` field in `package.json`**, or the job will fail. Published GitHub releases use the title **`skillforge <tag>`** (e.g. **`skillforge v0.1.0`**).
+- **Skillforge release** workflow runs when you push a tag matching **`v*`** (e.g. `v0.1.0`). The tag **minus the `v` prefix** must exactly match the **`version` field in `package.json`**, or the job will fail. Published GitHub releases use the title **`Skillforge <tag>`** (e.g. **`Skillforge v0.1.0`**).
 - Setup for **`NPM_TOKEN`**, recovering from stale tags, and local checks: [RELEASING.md](RELEASING.md).
 - Contributing and branch-protection expectations: [CONTRIBUTING.md](CONTRIBUTING.md). Security contact: [SECURITY.md](SECURITY.md).
 
