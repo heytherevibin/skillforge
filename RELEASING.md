@@ -16,13 +16,11 @@ In the GitHub UI, open **Actions** and look for **CI** and **Release** (not the 
 
 ## Publish to npm and attach a GitHub Release (happy path)
 
-You need the **`NPM_TOKEN`** repository secret. **Important:** use an npm **Automation** token (recommended name on npm: *Automation*), not a classic token that still triggers **2FA at publish** from CI.
+You need the **`NPM_TOKEN`** repository secret.
 
-- Create: [npm → Access Tokens → Generate New Token → **Automation**](https://www.npmjs.com/settings/~/tokens)
-- Automation tokens are meant for CI and **do not require `--otp`** on `npm publish`.
-- If CI fails with **`npm error code EOTP`** (“requires a one-time password”), your secret is almost certainly the wrong token type—replace **`NPM_TOKEN`** with a new **Automation** token and re-run the **Release** workflow.
+**npm (2025+):** Legacy “classic” tokens (including the old **Automation** type) are **gone**. Use a [**granular access token**](https://docs.npmjs.com/about-access-tokens) with **read and write** permission for **`@heytherevibin`** / `@heytherevibin/skillforge`, and enable **Bypass 2FA** on that token. Without **Bypass 2FA**, `npm publish` in GitHub Actions often fails with **`EOTP`** because CI cannot enter an authenticator code.
 
-Keep **2FA** enabled on your npm account; Automation tokens are the supported way to publish from GitHub Actions without pasting TOTPs into logs.
+Create one at [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens) (**Generate New Token** → **Granular Access Token**). Optionally explore [**trusted publishing** (OIDC)](https://docs.npmjs.com/trusted-publishers/) later to avoid long-lived tokens.
 
 1. On `main`, set **`version`** in `package.json` to the version you are releasing (e.g. `0.2.2`).
 2. Commit and **`git push origin main`**. Wait for **CI** to pass.
@@ -71,11 +69,10 @@ for f in python/app/main.py python/app/cli.py python/app/mcp_server.py python/ap
 
 **Symptom:** `npm error code EOTP` / “This operation requires a one-time password from your authenticator.”
 
-**Cause:** The token in **`NPM_TOKEN`** is not an **Automation** token (or npm is treating the publish as needing interactive 2FA).
+**Cause:** The granular token in **`NPM_TOKEN`** does not have **Bypass 2FA** enabled (default is off), or it lacks write access to the package.
 
 **Fix:**
 
-1. Revoke the old CI token on npm if you want to limit blast radius.
-2. Generate a new **[Automation](https://www.npmjs.com/settings/~/tokens)** token for the account that owns **`@heytherevibin`**.
-3. GitHub repo → **Settings → Secrets and variables → Actions** → update **`NPM_TOKEN`**.
-4. Re-run the failed **Release** workflow, or delete and re-push the release tag (see “Recover if a tag exists…” above) so publish runs again.
+1. On [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens), create a **Granular Access Token** (or edit policy if npm allows): **Read and write**, scope **`@heytherevibin`**, **Bypass 2FA: on**.
+2. Update **`NPM_TOKEN`** in GitHub → **Settings → Secrets and variables → Actions**.
+3. Re-run the failed **Release** workflow, or delete and re-push the release tag (see “Recover if a tag exists…” above).
