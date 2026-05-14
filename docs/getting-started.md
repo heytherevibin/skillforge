@@ -4,7 +4,7 @@
 
 Skillforge ships as **[@heytherevibin/skillforge](https://www.npmjs.com/package/@heytherevibin/skillforge)**. The **CLI** (`skillforge`) is a **Node.js** shim that installs a **managed Python virtualenv** under **`~/.skillforge/venv`** and runs **`python -m app.…`** with a consistent environment (`PYTHONPATH`, skill dirs, DB path). You do **not** need to activate the venv by hand.
 
-**Documentation matches this checkout's release line:** **0.11.18** (**[`package.json` `version`](../package.json)**). On npm, **`npm view @heytherevibin/skillforge version`** is the registry truth—use **`@latest`** or **`npx -y`** to stay current.
+**Documentation matches this checkout's release line:** **0.11.19** (**[`package.json` `version`](../package.json)**). On npm, **`npm view @heytherevibin/skillforge version`** is the registry truth—use **`@latest`** or **`npx -y`** to stay current.
 
 ## 2. Prerequisites
 

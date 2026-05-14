@@ -32,11 +32,11 @@ Create one at [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens) (
 2. **MCP `serverInfo.version`** matches **`package.json`** automatically (**[`python/app/npm_pkg_version.py`](python/app/npm_pkg_version.py)** **`published_package_version()`** — used from **`python/app/mcp_server.py`**). Operators can override via **`SKILLFORGE_MCP_SERVER_VERSION`**; do **not** hand-edit a second copy of semver in Python.
 3. Commit and **`git push origin main`**. Wait for **CI** to pass.
 4. Tag **`v` + the value of **`package.json` `version`**, push to **`origin`**, e.g.:  
-   `git tag v0.11.18 && git push origin v0.11.18`  
-   (**Replace **`v0.11.18`** with your semver** when releasing a newer number.)
-5. Open **Actions → Skillforge release**. The job will **fail the version check** if the tag does not match `package.json`.
+   `git tag v0.11.19 && git push origin v0.11.19`  
+   (**Replace **`v0.11.19`** with your semver** when releasing a newer number.)
+5. Open **Actions → Skillforge release**. The job **fails** if the tag does not match **`package.json`**. It then deletes **`skills/**/tests`** and **`python/app/__pycache__`** before **`npm pack`** / **`npm publish`** (see **`release.yml`**) so vendored SKILL **`tests/`** trees and **`__pycache__`** never reach the registry; runtime code ships only under the **`files`** allowlist (**`python/app/*.py`**, **`python/requirements.txt`**).
 6. Confirm on npm: `npm view @heytherevibin/skillforge version`  
-   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.11.18`**) and the `.tgz` asset.
+   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.11.19`**) and the `.tgz` asset.
 
 Scoped packages require a **public** publish; the workflow already runs `npm publish --access public`.
 

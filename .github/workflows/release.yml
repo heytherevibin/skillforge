@@ -38,6 +38,11 @@ jobs:
           fi
           echo "Version $PKG_VER matches tag $TAG_NAME"
 
+      - name: Strip publish-only cruft from tree
+        run: |
+          find skills -type d -name tests -print0 | xargs -0 rm -rf || true
+          rm -rf python/app/__pycache__
+
       - name: Create npm tarball
         run: npm pack
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.19
+
+- **npm package layout:** **`package.json` `files`** now ship **`python/app/*.py`** and **`python/requirements.txt`** (no packaged **`python/tests/`** tree). **`.npmignore`** documents cache/editor exclusions. **`.github/workflows/release.yml`** deletes **`skills/**/tests`** and **`python/app/__pycache__`** before **`npm pack`** / **`npm publish`** so vendored SKILL test suites and bytecode caches never reach the registry tarball.
+- **README:** Rewritten opener and structure for MCP-first positioning, governance, and publish semantics; **`package.json` `description`** and **`keywords`** aligned for discovery.
+
 ## 0.11.18
 
 - **`skillforge mcp config --companion`:** Emits **`SKILLFORGE_ROUTER_CONV_MAX_TURNS=6`** and **`SKILLFORGE_ROUTER_CONV_MSG_CHARS=400`** merged into **`entry.env`** alongside **`SKILLFORGE_ROUTER_MODE`** (**`host`** when used alone or with **`--with-env`**; **`auto`** + key placeholder when combined with **`--with-anthropic`**). MCP **`route_skills`** **`conversation`** is then honored for embedding continuity; **`capabilities`** bundle documents **`mcp_companion`** workflow. Materialize **`.cursor`** / **`.claude`** **`/skillforge`** prompts stress **`session_id`** + **`conversation`** on both host-mode calls.

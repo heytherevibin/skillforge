@@ -8,67 +8,83 @@
   <a href="https://github.com/heytherevibin/skillforge/actions/workflows/ci.yml"><img src="https://github.com/heytherevibin/skillforge/actions/workflows/ci.yml/badge.svg" alt="GitHub Actions CI status" /></a>
 </p>
 
-**Skillforge** is a **local-first** SKILL.md orchestration layer: embeddings pick a **small routed set** per task (optional hybrid + LLM stages), SQLite stores **sessions, learned weights, and events**, optional **project RAG** augments prompts, and the **production surface** is **stdio MCP**. A **Node** CLI (**`skillforge`**) bootstraps a managed **Python venv** under **`~/.skillforge/venv`**, merges **`~/.skillforge/env`**, mirrors MCP behaviours in **`skillforge route`**, **`skillforge tools`**, **`skillforge agent`**, and exposes operator CLIs (**`health`**, **`events`**, **`weights`**).
+**Runtime SKILL routing for MCP hosts.** Skillforge selects a **small, task-relevant** subset of **`SKILL.md`** (and optional indexed project text) per request so agents stay grounded without loading full catalogs.
 
-**Semantic versions** should align across **`package.json`**, git tags (**`vX.Y.Z`**), MCP **`initialize.serverInfo.version`**, **npm tarball**, and the **GitHub Release** artifact—see [`RELEASING.md`](RELEASING.md). **Published line on `main`:** **`0.11.18`** (same value in **[`package.json` `version`](package.json#L3)** and **[`CHANGELOG`](CHANGELOG.md)** top section). The **`package.json`** shield tracks **`main`**; **`npm`** / **`release`** shields track **published** artefacts and may briefly lag immediately after tagging.
+| Capability | Detail |
+|------------|--------|
+| **Primary integration** | **stdio MCP** (`skillforge mcp`) for Cursor, Claude Desktop, Claude Code, and compatible JSON-RPC hosts. |
+| **Default control model** | **`host`** routing: shortlist → host-chosen **`picked_names`** — no Anthropic key required for embedding-first paths. Optional **`auto`** / **`embedding`** / **`full`** when keys and policies allow. |
+| **Data plane** | **SQLite** under the operator profile and per-**`project_root`** `.skillforge/`: sessions, learned weights, **auditable route events**, optional **route memories**. |
+| **Operator surface** | Node **`skillforge`** CLI delegates to a managed **Python** venv; **`skillforge tools`** mirrors MCP; **`health`**, **`events`**, **`replay`**, **`weights`**, **`route-eval`** for preflight and CI. |
+| **Governance** | Regex **route policies** and **`project_notes`** overlays; companion preset **`mcp config --companion`** fuses **`conversation`** into embeddings when hosts pass transcript payloads. |
 
-### Operator route memories vs policy `project_notes`
-
-- **`project_notes`** (from **`route policies`** JSON — see **[docs/environment-and-configuration.md](docs/environment-and-configuration.md)**): **repository-wide** routing overlays tied to **`project_root`** (**`exclude_skills`**, boosts, static notes prefixed into the embedding query). Prefer committing policies **with the repo** so teammates and CI share intent.
-- **Route memories** (`SKILLFORGE_ROUTE_MEMORY`, MCP **`route_memory_*`): **per-operator / per-machine** SQLite bullets fused **ahead of** **`project_notes`**. Prefer policies for canon; use memories for quirks so you avoid duplicating team rules in Git.
-- **No cloud sync:** Memories are **not** uploaded anywhere; portability = **SQLite backup** / same **`SKILLFORGE_DB_PATH`**. Hosted multi-device sync is **out of scope** for this CLI.
-
----
-
-## Documentation (start here)
-
-| Guide | Audience |
-|-------|-----------|
-| [docs/README.md — index](docs/README.md) | Choose your path |
-| [Getting started](docs/getting-started.md) | Install MCP + sanity checks |
-| [Environment & configuration](docs/environment-and-configuration.md) | `~/.skillforge/env`, MCP host `entry.env`, and the full SKILLFORGE variable matrix |
-| [MCP integration](docs/mcp-integration.md) | Router modes (**`host`**, **`auto`**, …), tools, **`_meta`** |
-| [CLI reference](docs/cli-reference.md) | Subcommands (**`route`**, **`tools`**, **`agent`**, …) |
-| [Architecture & data](docs/architecture-and-data.md) | Pipeline, SQLite, policies, indexing |
-| [Troubleshooting](docs/troubleshooting.md) | Tools missing, npm **`EOTP`**, bad policy JSON |
-
-**Project meta:** [`CHANGELOG.md`](CHANGELOG.md) · [`STRATEGY.md`](STRATEGY.md) · [`SECURITY.md`](SECURITY.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) · [`RELEASING.md`](RELEASING.md)
+**Out of scope for the core package:** hosted multi-tenant SaaS, implicit cloud sync of operator SQLite, replacing the host’s model tier. See [`STRATEGY.md`](STRATEGY.md) · [`SECURITY.md`](SECURITY.md).
 
 ---
 
-## TL;DR — try it now
+## Documentation
+
+| Guide | Use when |
+|-------|----------|
+| [Documentation index](docs/README.md) | Choosing a reading order |
+| [Getting started](docs/getting-started.md) | Install, MCP JSON, first checks |
+| [Environment & configuration](docs/environment-and-configuration.md) | `~/.skillforge/env`, MCP `entry.env`, full **`SKILLFORGE_*`** matrix |
+| [MCP integration](docs/mcp-integration.md) | Router modes, tools, **`_meta`**, companion preset |
+| [CLI reference](docs/cli-reference.md) | Every **`skillforge`** subcommand |
+| [Architecture & data](docs/architecture-and-data.md) | Pipeline, SQLite, policies, project RAG |
+| [Troubleshooting](docs/troubleshooting.md) | Missing tools, npm **`EOTP`**, invalid policy JSON |
+
+**Project meta:** [`CHANGELOG.md`](CHANGELOG.md) · [`STRATEGY.md`](STRATEGY.md) · [`CONTRIBUTING.md`](CONTRIBUTING.md) · [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) · [`RELEASING.md`](RELEASING.md)
+
+---
+
+## Quick start
 
 ```bash
 npx --yes @heytherevibin/skillforge --help
-skillforge install            # provisions ~/.skillforge/venv when needed
-skillforge mcp config              # stdout JSON snippet → paste into ~/.cursor/mcp.json, then restart IDE
-skillforge mcp config --companion # optional: conversation-aware routing env for MCP hosts
-skillforge tips && skillforge health --quick
-skillforge config init        # optional ~/.skillforge/env template · skillforge config validate
+skillforge install
+skillforge mcp config                    # paste JSON into host (e.g. ~/.cursor/mcp.json), restart IDE
+skillforge mcp config --companion        # optional: embeddings fuse route_skills `conversation` when host sends transcript
+skillforge health --quick && skillforge tips
+skillforge config init && skillforge config validate   # optional ~/.skillforge/env
 ```
 
-**Default MCP routing (**`SKILLFORGE_ROUTER_MODE` unset ⇒ **`host`**) is two-step:** first **`route_skills`** shortlist · second finalize with **`picked_names`**.
+Unset **`SKILLFORGE_ROUTER_MODE`** ⇒ **`host`**: **`route_skills`** once for shortlist, again with **`picked_names`** (+ same **`session_id`**; pass **`conversation`** on both calls when using **`--companion`**).
 
 ---
 
-## What ships in this repository
+## Routing context: policies vs route memories
 
-| Path | Purpose |
-|------|---------|
-| `bin/cli.js` | Node entry (`skillforge`); merges env (**`buildEnv`**) and spawns Python |
-| `lib/` | Host setup, **`user-env-profile`** parser (`config validate`) |
-| `python/app/` | Router, MCP server, SQLite, CLIs, contracts |
-| `skills/` | Bundled SKILL.md corpus (CI minimum via `ci/bundle-gate.json`) |
-| `ci/` | Node tests (**`test-user-env-profile.cjs`**), bundle gate JSON |
-| `docs/` | Human-oriented guides (mirrors published npm tarball **`files`** list) |
+- **`project_notes`** (from **route policies** JSON — [Environment & configuration](docs/environment-and-configuration.md)): repo-scoped overlays (**`exclude_skills`**, boosts, static notes prefixed into the embedding query). Prefer committing policies with the repository so CI and teammates share routing intent.
+- **Route memories** (`SKILLFORGE_ROUTE_MEMORY`, MCP **`route_memory_*`**): operator-local bullets merged **before** **`project_notes`**. Use for personal or machine-specific quirks; prefer policies for canonical org rules.
 
-**Tests:** **`npm test`** (Node **`--check`**) + **`cd python && pytest tests/`** in CI (**`.github/workflows/ci.yml`**).
+Memories do **not** sync to Skillforge-hosted cloud; backup = SQLite / **`weights export`**. See **[Architecture & data](docs/architecture-and-data.md)**.
 
 ---
 
-## NPM package
+## What ships on npm
 
-Scoped package **`@heytherevibin/skillforge`**: **`npm install -g`** or **`npx -y`** (see badges above).
+Publishing is **allowlisted** in **`package.json` `files`**: runtime **`python/app/*.py`** (not the full `python/` tree — **no** pytest tree, **no** bytecode in a clean git checkout), **`python/requirements.txt`**, **`skills/`**, **`bin/`**, **`lib/`**, **`ci/`**, **`docs/`**, and project meta markdown. **[`.npmignore`](.npmignore)** documents extra exclusions (caches, editor cruft). Because npm’s `files` field does not apply **`.npmignore`** to every nested path, the **Skillforge release** workflow removes any **`skills/**/tests`** directory and **`python/app/__pycache__`** immediately before **`npm pack`** / **`npm publish`** (see **[`.github/workflows/release.yml`](.github/workflows/release.yml)**). A local **`npm pack`** from a dirty tree may still include cached **`__pycache__`** or vendored tests — use a clean clone or match the release job’s **Strip** step if you need a bit-identical tarball.
+
+| Path | Role |
+|------|------|
+| `bin/cli.js` | `skillforge` entry; merges env (`buildEnv`), spawns Python |
+| `lib/` | Host setup, user env profile (`skillforge config validate`) |
+| `python/app/*.py` | Router, MCP server, SQLite, CLIs (allowlist — no packaged pytest tree) |
+| `python/requirements.txt` | Pip install targets for **`skillforge install`** |
+| `skills/` | Bundled SKILL.md corpus (see **Strip** step in release workflow for vendored **`tests/`** dirs) |
+| `ci/` | Node **`--test`** harness used by **`npm test`** |
+| `docs/` | Operator guides |
+
+**Automated checks:** **`npm test`** (Node). Full Python **`pytest`** runs in repository CI (**`.github/workflows/ci.yml`**), not shipped to consumers.
+
+---
+
+## Install
+
+Scoped **`@heytherevibin/skillforge`**: global **`npm install -g`** or **`npx -y`** (see badges).
+
+**Version line:** **`0.11.19`** on **`main`** aligns **`package.json`**, git tags **`v*`**, MCP **`serverInfo.version`**, and release artefacts — **[`RELEASING.md`](RELEASING.md)**.
 
 ---
 

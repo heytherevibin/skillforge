@@ -1,15 +1,19 @@
 {
   "name": "@heytherevibin/skillforge",
-  "version": "0.11.18",
-  "description": "SKILL.md orchestration for AI agents: MCP-first routing with local embeddings, optional LLM stages, project RAG, policy overlays, portable learning state, and auditable telemetry.",
+  "version": "0.11.19",
+  "description": "MCP-first SKILL.md routing for AI agents: local embeddings, SQLite sessions and telemetry, optional LLM rerank paths, regex route policies and project overlays, companion conversation preset, parity CLI.",
   "keywords": [
     "claude",
+    "cursor",
+    "mcp",
     "skills",
     "agent",
     "orchestrator",
     "anthropic",
+    "sqlite",
     "llm",
-    "routing"
+    "routing",
+    "model-context-protocol"
   ],
   "license": "MIT",
   "bin": {
@@ -19,7 +23,8 @@
     "bin/",
     "ci/",
     "lib/",
-    "python/",
+    "python/app/*.py",
+    "python/requirements.txt",
     "skills/",
     "README.md",
     "docs/",
@@ -29,7 +34,8 @@
     "RELEASING.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
-    "CODE_OF_CONDUCT.md"
+    "CODE_OF_CONDUCT.md",
+    ".npmignore"
   ],
   "engines": {
     "node": ">=18.0.0"
