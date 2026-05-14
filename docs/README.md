@@ -11,4 +11,4 @@ These guides supplement the repo root **[README](../README.md)** (overview and b
 | 5 | [Architecture & data](architecture-and-data.md) | Routing pipeline, SQLite layout, policies, project RAG, skills/packs |
 | 6 | [Troubleshooting](troubleshooting.md) | Common failures (tools missing, npm CI, policies JSON) |
 
-**Elsewhere:** **Current release (`main`):** **`0.11.7`** — [CHANGELOG](../CHANGELOG.md) · [SECURITY](../SECURITY.md) · [RELEASING](../RELEASING.md) · [CONTRIBUTING](../CONTRIBUTING.md) · [STRATEGY](../STRATEGY.md).
+**Elsewhere:** **Current release (`main`):** **`0.11.18`** — [CHANGELOG](../CHANGELOG.md) · [SECURITY](../SECURITY.md) · [RELEASING](../RELEASING.md) · [CONTRIBUTING](../CONTRIBUTING.md) · [STRATEGY](../STRATEGY.md).

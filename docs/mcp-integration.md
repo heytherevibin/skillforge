@@ -6,9 +6,9 @@ Skillforge speaks **stdio MCP JSON-RPC**. Tool definitions (**name**, **`inputSc
 
 Anything that writes stray bytes to **stdout** breaks MCP hosts. **`skillforge mcp`** never logs JSON-RPC payloads to stdout; logs go to **stderr**.
 
-## Default routing (**host**, Skillforge ≥ 0.11.0 — use **≥ 0.11.7** if you rely on **`route-eval`** / full router init stability)
+## Default routing (**host**, Skillforge ≥ 0.11.0 — use **≥ 0.11.10** for **`--force-cursor`** / **`--force-claude`** parity; **≥ 0.11.11** adds **`skillforge help --ui`** / **`--browse`**; **≥ 0.11.12** adds **`route_skills` `dry_run`**, **`SKILLFORGE_ROUTE_TRACE_LEVEL`**, **`routing_correlation_id`** in **`_meta`**; **≥ 0.11.13** adds **`skillforge route-eval ingest`** (SQLite **`events`** → regression fixture JSON); **≥ 0.11.14** adds optional **`route_quality.policy_shadow`** and MCP schema **`1.10`** when **`SKILLFORGE_ROUTE_POLICIES_SHADOW*`** is set; **≥ 0.11.15** adds **`SKILLFORGE_WEIGHT_HALF_LIFE_DAYS`**, **`skillforge events prune`**, filtered **`skillforge replay`**, **`SKILLFORGE_ROUTER_LLM_RETRIES`**, and **`idx_events_user_type_ts`**; **≥ 0.11.16** adds **`SKILLFORGE_ROUTE_MEMORY*`**, MCP **`route_memory_*`**, **`route_quality.route_memory`**, schema **`1.11`**; **≥ 0.11.17** persists compact **`route_memory`** in **`route`**/**`host_shortlist`** **events**, optional dedup/decay knobs, **`verify_route_memory_cli`**; **≥ 0.11.18** adds MCP companion preset (**`skillforge mcp config --companion`**), **`capabilities.mcp_companion`**, and materialize/global **`/skillforge`** prompts for **`conversation`** on both host calls
 
-Stable **`Router`** embedding + **`_by_name`** initialization ship in **[0.11.7](../CHANGELOG.md)**; stay on **`0.11.7`** or newer for CI-aligned routing.
+Stable **`Router`** init ships in **[0.11.7](../CHANGELOG.md)**; tooling through **[0.11.10](../CHANGELOG.md)**. Help layout **[0.11.11](../CHANGELOG.md)**; routing observability **[0.11.12](../CHANGELOG.md)**; **`route-eval ingest`** **[0.11.13](../CHANGELOG.md)**; policy shadow **[0.11.14](../CHANGELOG.md)**; ops hardening (weights / retention / **`replay` filters**) **[0.11.15](../CHANGELOG.md)**; governed routing memories **[0.11.16](../CHANGELOG.md)**; event snapshots + longevity tuning **[0.11.17](../CHANGELOG.md)**; companion preset + host prompts **[0.11.18](../CHANGELOG.md)**.
 
 When **`SKILLFORGE_ROUTER_MODE`** is **unset**:
 
@@ -43,9 +43,18 @@ skillforge mcp config
 skillforge mcp config --local
 skillforge mcp config --with-anthropic    # SKILLFORGE_ROUTER_MODE=auto + key placeholder env
 skillforge mcp config --with-env           # SKILLFORGE_ROUTER_MODE=host scaffold in entry.env
+skillforge mcp config --companion          # + SKILLFORGE_ROUTER_CONV_MAX_TURNS=6, SKILLFORGE_ROUTER_CONV_MSG_CHARS=400
+skillforge mcp config --with-env --companion
+skillforge mcp config --with-anthropic --companion   # auto + key + conversation env
 ```
 
-**Note:** Passing **`--with-anthropic`** **replaces** the emitted **`env`** object (**`--with-env`** loses); merge manually if you need both patterns.
+**Note:** Passing **`--with-anthropic`** **replaces** the emitted **`env`** object (**`--with-env`** loses); **`--companion`** conversation vars are still merged into whichever **`env`** branch applies.
+
+### Companion preset (MCP JSON)
+
+**`--companion`** adds **`SKILLFORGE_ROUTER_CONV_MAX_TURNS=6`** and **`SKILLFORGE_ROUTER_CONV_MSG_CHARS=400`** so **`route_skills`** can fuse **`conversation`** into the embedding query (ignored when turns is **0**). Without transcript payloads from the host, routing stays prompt-only — the agent must pass recent messages as **`{role, content}`** on **both** **`host`**-mode calls, reusing **`session_id`**.
+
+The **`capabilities`** tool returns a **`mcp_companion`** object with a numbered workflow (optional **`capabilities`** bootstrap → shortlist → **`picked_names`** finalize).
 
 ## MCP tools (quick map)
 
@@ -60,7 +69,7 @@ Schemas + parameter docs: **`python/app/mcp_server.py`**.
 | **`skill_feedback`**, **`skill_referenced`**, **`disable_skill`** | Learning loop inputs. |
 | **`materialize_project`** | Opinionated scaffolding for **`cursor`**, **`claude_code`**, or **`both`** with **`hosts`**: **`auto`**, **`both`**, **`cursor`**, **`claude_code`**. |
 | **`skillforge_bootstrap`** | Composite route + scaffold helper (mind **`host`** shortlist caveat). |
-| **`capabilities`** | Session bootstrap bundle (**semver**, MCP schema marker, **`mcp_tools`**, **`user_env_profile`** commands, **`router_snapshot`**). |
+| **`capabilities`** | Session bootstrap bundle (**semver**, MCP schema marker, **`mcp_tools`**, **`mcp_companion`** workflow, **`user_env_profile`** commands, **`router_snapshot`**). |
 | **`get_router_status`** | Diagnostics snapshot (modes, hybrids, rerank hints). |
 | **`project_index_status`** | Project **`project_chunks`** stats + index metadata (**`project_root`**). |
 | **`weights_snapshot`** | Portable learned weights excerpt (parity with **`weights export`** CLI). |

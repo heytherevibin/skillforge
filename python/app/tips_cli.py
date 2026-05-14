@@ -16,6 +16,10 @@ Stable env (keys + tunables without shell paste): **`~/.skillforge/env`** — **
 - Default routing is **host**: first `route_skills` returns a **shortlist**, second call sends `picked_names`.
 - **`capabilities`** tool: one JSON bundle — schema version, tool list, router snapshot — good for session start.
 
+## Routing memories vs policy `project_notes` (SQLite)
+
+When **`SKILLFORGE_ROUTE_MEMORY`** is **on**, MCP **`route_memory_*`** / **`skillforge tools memory-*`** store **operator bullets** that **prepend** the embedding query **before** policy **`project_notes`**. Prefer **committed `policies.json` / env policy** for shared repo rules (`exclude_skills`, boosts, **`project_notes`**); use **memories** for personal machine quirks so you don't duplicate canon. **`SKILLFORGE_ROUTE_MEMORY_DEDUP`** updates same normalised **`body`**; **`SKILLFORGE_ROUTE_MEMORY_IMPORTANCE_HALF_LIFE_DAYS`** soft-ranks staleness **read-time**. Verify: **`PYTHONPATH=. python -m app.verify_route_memory_cli`** (`package/python`). **Hosted sync**: not shipped — SQLite only.
+
 ## Terminal (same engine as MCP)
 
 - `skillforge route "your prompt"` — two-step **host** mode mirrors MCP (shortlist stdout, then re-run):

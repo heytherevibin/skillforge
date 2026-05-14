@@ -4,10 +4,103 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import sys
 import time
 from pathlib import Path
 
 from app.db_paths import resolve_orchestrator_db
+from app.events_query import count_events_before, delete_events_before, event_ts_bounds_for_cutoff
+
+
+def prune_main(raw_argv: list[str]) -> None:
+    """Delete rows matching ``user_id`` and ``ts < cutoff``. No deletes unless ``--execute``."""
+    ap = argparse.ArgumentParser(
+        prog="skillforge events prune",
+        description=(
+            "Preview or purge SQLite events for one logical user namespace. "
+            "Pass --execute to DELETE; omit it to print matched row count only."
+        ),
+    )
+    grp = ap.add_mutually_exclusive_group(required=True)
+    grp.add_argument(
+        "--older-than-days",
+        type=float,
+        metavar="N",
+        help="Delete events with ts strictly before (now − N×86400). N must be > 0.",
+    )
+    grp.add_argument(
+        "--before-ts",
+        "--before",
+        type=float,
+        dest="before_ts",
+        metavar="UNIX_TS",
+        help="Delete events with ts strictly before this Unix timestamp.",
+    )
+    ap.add_argument(
+        "--execute",
+        action="store_true",
+        help="Perform DELETE after preview. Omit for dry-run.",
+    )
+    ap.add_argument(
+        "--vacuum",
+        action="store_true",
+        help="After DELETE, run VACUUM (locks DB; potentially slow).",
+    )
+    ap.add_argument("--user", default="", metavar="USER", help="Same user_id as MCP / replay (default empty).")
+    ap.add_argument(
+        "--project-root",
+        default="",
+        help="Workspace root <root>/.skillforge/orchestrator.db.",
+    )
+
+    ns = ap.parse_args(raw_argv)
+    uid = ns.user.strip()
+    db_path = resolve_orchestrator_db((ns.project_root or "").strip() or None)
+    if not db_path.exists():
+        print(f"No database yet: {db_path}")
+        raise SystemExit(1)
+
+    if ns.older_than_days is not None:
+        if float(ns.older_than_days) <= 0:
+            print("--older-than-days must be > 0.")
+            raise SystemExit(2)
+        cutoff = time.time() - float(ns.older_than_days) * 86400.0
+    else:
+        cutoff = float(ns.before_ts)
+
+    con = sqlite3.connect(str(db_path))
+
+    cnt = count_events_before(con, user_id=uid, cutoff_ts=cutoff)
+    mn, mx = event_ts_bounds_for_cutoff(con, user_id=uid, cutoff_ts=cutoff)
+    con.close()
+
+    print(f"SQLite: {db_path}")
+    print(
+        "Match:",
+        f" user_id={uid!r}",
+        " AND ts",
+        "<",
+        f"{cutoff:.6g} ({time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cutoff))} local)",
+    )
+    print(f"Rows to delete: {cnt}")
+    if mn is not None and mx is not None:
+        print(f"Covered ts span: [{mn:.6g} … {mx:.6g}]")
+    elif cnt == 0:
+        print("(no matching rows)")
+
+    if not ns.execute:
+        print("(dry-run) Re-run with --execute to DELETE these rows.")
+        return
+
+    con = sqlite3.connect(str(db_path))
+    try:
+        n_del = delete_events_before(con, user_id=uid, cutoff_ts=cutoff)
+        print(f"Deleted {n_del} row(s).")
+        if ns.vacuum:
+            con.execute("VACUUM")
+            print("VACUUM completed.")
+    finally:
+        con.close()
 
 
 def _format_route_line(ts: float, sid: str | None, prev: dict, verbose: bool) -> str:
@@ -87,6 +180,11 @@ def _print_snapshot(
 
 
 def main() -> None:
+    argv = sys.argv[1:]
+    if argv and argv[0] == "prune":
+        prune_main(argv[1:])
+        return
+
     ap = argparse.ArgumentParser(
         description="Skillforge event log (SQLite). Use --watch for realtime usage + routes."
     )

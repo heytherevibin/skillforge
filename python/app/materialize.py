@@ -139,9 +139,9 @@ alwaysApply: false
 
 When the user invokes **Skillforge**, types **`/skillforge`** (Cursor or **Claude Code** project command), or needs deep SKILL.md guidance for this codebase:
 
-1. Call **route_skills** with **`project_root`** set to this workspace root (so learning and SQLite live in **`.skillforge/`** here), the user's task, and optional **session_id** (reuse within a thread for reroute stats). If the host sets **`SKILLFORGE_PROJECT_ROOT`**, you can omit **project_root** on each call.
+1. Call **route_skills** with **`project_root`** set to this workspace root (so learning and SQLite live in **`.skillforge/`** here), the user's task as **`prompt`**, and reuse **`session_id`** within the same chat thread. If the host sets **`SKILLFORGE_PROJECT_ROOT`**, you can omit **project_root** on each call.
 
-   If **`host`** routing (default when **`SKILLFORGE_ROUTER_MODE`** is unset): first **`route_skills`** without **`picked_names`** (shortlist only); then call again with **`picked_names`** for the chosen catalog ids before continuing.
+   If **`host`** routing (default when **`SKILLFORGE_ROUTER_MODE`** is unset): first **`route_skills`** without **`picked_names`** (shortlist only); then call again with **`picked_names`** for the chosen catalog ids before continuing. On **both** calls, pass the **same** **`conversation`** (recent messages as **`{{role, content}}`**) when the MCP server has **`SKILLFORGE_ROUTER_CONV_MAX_TURNS` > 0** — recommended preset: **`skillforge mcp config --companion`**.
 2. Inject the returned skill bodies into context before continuing.
 3. To refresh project files, call **materialize_project** with **project_root** set to this workspace root and **skill_names** from the last **route_skills** result.
 
@@ -169,7 +169,7 @@ The user chose the **`/skillforge`** project command. Use the **skillforge** MCP
 1. **`route_skills`**: pass **`project_root`** as this workspace root (absolute path) so SQLite lives in **`.skillforge/`** here. Pass the **current user task** as **`prompt`**. Reuse **`session_id`** across turns in the same thread when the MCP returns one.
 
    - **`host`** routing (default when **`SKILLFORGE_ROUTER_MODE`** is unset): call once **without** **`picked_names`** (shortlist in the response); then call again with **`picked_names`** (exact catalog ids) to load skill context.
-   - Optional: pass **`conversation`** when recent turns should influence routing.
+   - Pass **`conversation`** on **both** host calls when **`SKILLFORGE_ROUTER_CONV_MAX_TURNS` > 0** (recent turns as **`{{role, content}}`**). Configure the server with **`skillforge mcp config --companion`** so routing can use transcript context.
 
 2. **Use the returned skill text** in your answer (summarize or follow the SKILL.md guidance as appropriate).
 
@@ -200,6 +200,7 @@ Project-local **`/skillforge`** for **Claude Code**. Use the **skillforge** MCP 
 1. **`route_skills`**: pass **`project_root`** as this workspace root (absolute path). Pass the **current user task** as **`prompt`**. Reuse **`session_id`** when returned.
 
    - **`host`** routing (default when **`SKILLFORGE_ROUTER_MODE`** is unset): shortlist first, then **`picked_names`**.
+   - Pass **`conversation`** on **both** host calls when **`SKILLFORGE_ROUTER_CONV_MAX_TURNS` > 0** (recent turns as **`{{role, content}}`**). Use **`skillforge mcp config --companion`** on the MCP server for that preset.
 
 2. **Use the returned skill text** in your answer.
 
@@ -232,6 +233,7 @@ Scaffold for goals and milestones. Re-run **materialize_project** after major ro
 - **Cursor**: use **`/skillforge`** (**`.cursor/commands/skillforge.md`**) after **materialize_project** with **`hosts: \"auto\"`**, **`\"cursor\"`**, or **`\"both\"`**.
 - **Claude Code**: use **`/skillforge`** (**`.claude/commands/skillforge.md`**) after **materialize_project** with **`hosts: \"auto\"`**, **`\"claude_code\"`**, or **`\"both\"`**.
 - **session_id**: reuse the same value across **route_skills** calls in one conversation thread.
+- **Companion routing**: **`skillforge mcp config --companion`** enables **`conversation`** in embeddings; pass the same **`conversation`** on both host-mode **`route_skills`** calls.
 - Re-bootstrap this project after new skills: **materialize_project** again.
 
 ## Goals

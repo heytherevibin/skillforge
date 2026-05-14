@@ -26,6 +26,13 @@ def test_build_capabilities_bundle_includes_ordered_tools_and_schema() -> None:
     snap = bundle["router_snapshot"]
     assert snap["skills_loaded_count"] == 3
 
+    companion = bundle["mcp_companion"]
+    assert companion["preset_command"] == "skillforge mcp config --companion"
+    assert "SKILLFORGE_ROUTER_CONV_MAX_TURNS=6" in companion["conversation_env_note"]
+    wf = companion["workflow"]
+    assert isinstance(wf, list) and len(wf) >= 4
+    assert "route_skills" in wf[1].lower() and "route_skills" in wf[2].lower()
+
 
 def test_capabilities_tool_names_cover_expected_surface() -> None:
     essential = {"route_skills", "capabilities", "get_router_status", "events_recent"}

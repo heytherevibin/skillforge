@@ -256,3 +256,54 @@ def merge_policy_includes(
             merged.append(n)
 
     return merged, audit
+
+
+def load_shadow_route_policies_config() -> tuple[dict[str, Any] | None, str | None]:
+    """Load an alternate routing policy overlay for embedding shortlist **comparison only**.
+
+    Used when ``SKILLFORGE_ROUTE_POLICIES_SHADOW`` or ``SKILLFORGE_ROUTE_POLICIES_SHADOW_FILE``
+    is set — never replaces the primary policies from ``load_route_policies_config``.
+
+    Returns ``(cfg, provenance_label)`` or ``(None, None)`` when disabled / invalid."""
+    raw_env = os.getenv("SKILLFORGE_ROUTE_POLICIES_SHADOW", "").strip()
+    if raw_env:
+        try:
+            data = json.loads(raw_env)
+            if isinstance(data, dict):
+                return data, "shadow:inline_json"
+            print(
+                "[skillforge] SKILLFORGE_ROUTE_POLICIES_SHADOW must be a JSON object — shadow disabled.",
+                file=sys.stderr,
+            )
+        except json.JSONDecodeError as exc:
+            print(
+                "[skillforge] SKILLFORGE_ROUTE_POLICIES_SHADOW invalid JSON — shadow disabled:",
+                str(exc),
+                file=sys.stderr,
+            )
+        return None, None
+
+    path_env = os.getenv("SKILLFORGE_ROUTE_POLICIES_SHADOW_FILE", "").strip()
+    if path_env:
+        p = Path(path_env).expanduser()
+        if not p.is_file():
+            print(f"[skillforge] SKILLFORGE_ROUTE_POLICIES_SHADOW_FILE not found ({p}) — shadow disabled.", file=sys.stderr)
+            return None, None
+        try:
+            raw = p.read_text(encoding="utf-8")
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return data, f"shadow:file:{p}"
+            print(
+                f"[skillforge] shadow policy file root must be a JSON object ({p}) — shadow disabled.",
+                file=sys.stderr,
+            )
+        except json.JSONDecodeError as exc:
+            print(
+                f"[skillforge] invalid JSON in shadow policy file ({p}) — shadow disabled:",
+                str(exc),
+                file=sys.stderr,
+            )
+        return None, None
+
+    return None, None

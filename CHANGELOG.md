@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.11.18
+
+- **`skillforge mcp config --companion`:** Emits **`SKILLFORGE_ROUTER_CONV_MAX_TURNS=6`** and **`SKILLFORGE_ROUTER_CONV_MSG_CHARS=400`** merged into **`entry.env`** alongside **`SKILLFORGE_ROUTER_MODE`** (**`host`** when used alone or with **`--with-env`**; **`auto`** + key placeholder when combined with **`--with-anthropic`**). MCP **`route_skills`** **`conversation`** is then honored for embedding continuity; **`capabilities`** bundle documents **`mcp_companion`** workflow. Materialize **`.cursor`** / **`.claude`** **`/skillforge`** prompts stress **`session_id`** + **`conversation`** on both host-mode calls.
+
+## 0.11.17
+
+- **Route memory hardening:** **`route`** / **`host_shortlist`** **SQLite events** embed a compact **`route_memory`** block (`route_memory_event/1`) for replay/auditing (mirrors **`route_quality.route_memory`** subset). **`route_memory_append`** returns **`append_meta`** (dedup/upsize). Dedup (**`SKILLFORGE_ROUTE_MEMORY_DEDUP`**): re-append with whitespace-normalised same body **updates** the row (fresh **`created_at`**, **`importance=max`**, TTL extended to later expiry when both set). Soft ranking (**`SKILLFORGE_ROUTE_MEMORY_IMPORTANCE_HALF_LIFE_DAYS`**): fusion + **`route_memory_list`** sort by **`importance × 2^(-age_days/H)`** (read-time only; DB **`importance`** unchanged). Helpers: **`compact_route_memory_for_event`**. Smoke: **`python -m app.verify_route_memory_cli`**. **`tests/test_route_memory_integration.py`** exercises **`run_route_turn`** (**`host`** + mock router). Docs: **`skillforge tips`**, **`README`** (memories vs **`project_notes`**), **`architecture-and-data`**.
+
+## 0.11.16
+
+- **Governed routing memories:** SQLite **`route_memories`** (per **`user_id`**, **`project_scope`**, TTL) merged into the embedding **`route_query`** **before** policy **`project_notes`**, gated by **`SKILLFORGE_ROUTE_MEMORY`** (**`SKILLFORGE_ROUTE_MEMORY_MAX_CHARS`**, **`SKILLFORGE_ROUTE_MEMORY_MAX_ROWS`**, **`SKILLFORGE_ROUTE_MEMORY_DEFAULT_TTL_DAYS`**). Telemetry: **`route_quality.route_memory`** (`schema` **`route_memory_fusion/1`**). MCP tools **`route_memory_append`**, **`route_memory_list`**, **`route_memory_delete`**, **`route_memory_prune_expired`**; **`skillforge tools memory-*`** parity. **`explain_route`** uses the same fusion as **`route_skills`**. **`route_quality.policy_shadow`** base query includes memories when enabled. MCP schema **`1.11`**.
+
+## 0.11.15
+
+- **Learned weight half-life (opt-in):** **`SKILLFORGE_WEIGHT_HALF_LIFE_DAYS`** applies read-time freshness `2^(-age_days/H)` on stored **`skill_weights.weight`** bias (disabled skills unchanged). Default unset = legacy behavior. **`feedback_effect`** / **`get_skill_weight_detail`** add **`stored_learned_weight`** + **`decay_freshness_multiplier`** when active. See **`python/app/weight_semantics.py`**.
+- **Event retention:** **`skillforge events prune --older-than-days N`** or **`--before-ts`** / **`--before`** — reports matched row count by default; **`--execute`** required to **`DELETE`**. Optional **`--vacuum`**. Shared helpers in **`python/app/events_query.py`**.
+- **Replay export filters:** **`skillforge replay`** adds **`--min-ts`**, **`--max-ts`**, **`--event-types`**, **`--since-days`** (with **`--json`** or human timeline).
+- **SQLite:** composite index **`idx_events_user_type_ts`** on **`events(user_id, event_type, ts)`** for filtered scans.
+- **Router LLM resilience:** **`SKILLFORGE_ROUTER_LLM_RETRIES`** (default **`1`**, max **8**) with exponential backoff on retryable HTTP/SDK errors in **`AnthropicRouterLLM`** / **`OpenAIRouterLLM.complete`**.
+
+## 0.11.14
+
+- **Policy shadow (telemetry-only):** Set **`SKILLFORGE_ROUTE_POLICIES_SHADOW`** (inline JSON) or **`SKILLFORGE_ROUTE_POLICIES_SHADOW_FILE`** to run a second embedding **`shortlist_with_facets`** from the **base** routing query merged with **shadow** overlay (**`exclude_skills`**, **`routing_boosts`**, **`project_notes`**) — never overrides primary picks or primary policy merges. **`route_quality.policy_shadow`** records head names, **`jaccard_topk`**, and symmetric diffs (`schema`: **`policy_shadow_compare/1`**). Inline shadow env wins over file when both are set. MCP response schema **`1.10`** — see **`python/app/route_policy_shadow.py`**, **`python/app/route_policies.py`**, **`run_route_turn`**.
+
+## 0.11.13
+
+- **`skillforge route-eval ingest`**: Export **`route`** / **`host_shortlist`** rows from orchestrator SQLite into a **`route-eval`** fixture (`--expect-from picked|top_candidates|both|none`, `--keep-audit`, `--event-types`, `--newest-first`, `--session-id`). Prompts reproduce telemetry snippets (**≤ ~300 chars**). Implementation: **`python/app/route_eval_ingest.py`**, **`app.eval_cli ingest`**. Harness evaluation strips **`_…`** keys on cases automatically.
+
+## 0.11.12
+
+- **Trusted routing / enterprise observability:** Each routing turn allocates a **`routing_correlation_id`** (UUID) surfaced in MCP **`route_skills` `_meta`**, **`events`** payloads (**`route`**, **`host_shortlist`**), and the in-process result dict when persistence runs. Operators set **`SKILLFORGE_ROUTE_TRACE_LEVEL`** (`off` default, `compact`, `full`) to attach an optional MCP **`decision_trace`** (digest + shortlists; full adds **`route_quality_snapshot`**).
+- **`route_skills` `dry_run`:** MCP boolean (and **`skillforge route --dry-run`**) skips **sessions**, **skill use increments**, **`events`** inserts for that call, and **`.skillforge/last_route.json`** — useful for staging. **`skillforge route-eval`** uses **`dry_run`** internally so eval does not perturb session/telemetry semantics.
+- **MCP response schema:** **`1.9`** (**`routing_correlation_id`**, **`dry_run`**, **`decision_trace`**). See **`python/app/mcp_contract.py`**.
+
+## 0.11.11
+
+- **CLI help:** Structured help content in **`lib/help-content.js`** with **`renderHelp`** in **`lib/help-render.js`** — same plain matrix on **`skillforge --help`** (CI/script safe). **`skillforge help --ui`** (**`SKILLFORGE_HELP_UI=panels`**) renders boxed sections on TTY **`stderr`**; **`skillforge help --browse`** opens an interactive section picker (TTY only; otherwise falls back with a short notice). Covered by **`ci/test-help-render.cjs`**.
+
+## 0.11.10
+
+- **Setup / lifecycle:** **`--force-claude`** and **`--force-claude-code`** mirror **`--force-cursor`** (Claude Code–only + managed **`skillforge.md`** overwrite; Cursor untouched). Passing **both** **`--force-cursor`** **and** **`--force-claude`** (or **`--force-claude-code`**) now means **all hosts** + **`force`** (same as **`--hosts=all`** with overwrite semantics).
+
+## 0.11.9
+
+- **Setup / lifecycle:** **`--force-cursor`** now means **Cursor-only** host integration (still **forces** managed **`~/.cursor/commands/skillforge.md`** overwrite) and **does not** write Claude Code **`~/.claude/commands/skillforge.md`**. **`--hosts=cursor|claude-code|all`**, **`--only-cursor`**, **`--only-claude-code`**, **`--force-claude-code`** / **`--force-claude`** documented in **`--help`**; env overrides **`SKILLFORGE_SKIP_*`** unchanged.
+
+## 0.11.8
+
+- **CLI (`bin/cli.js`):** Fix **`skillforge tools <verb>`** argv forwarding (**`args.slice(1)`**) so **`app.tools_cli`** receives **`search`**, **`catalog`**, **`--json`**, and other flags (`0.11.7` accidentally dropped the verb).
+- **`skillforge mcp config`:** Emits JSON immediately without implicit **`setupIfNeeded()`** (no surprise venv **`pip`** runs when pasting MCP snippets).
+- **`skillforge install`:** If quiet **`pip`** fails, retry once verbosely; assert **`requirements.txt`** exists; **`ci/test-cli-shim.cjs`** guards the tools slice and **`mcp config`** bootstrap behavior.
+
 ## 0.11.7
 
 - **Python router:** Restore **`Router.__init__`** so skill embeddings, **`_by_name`**, hybrid/BM25, and chunk indexing initialize correctly (fixes **`AttributeError: 'Router' object has no attribute '_by_name'`** in **`route-eval`** / **`run_route_turn`** when router setup was mistakenly unreachable behind the **`anthropic`** accessor).
@@ -68,7 +120,7 @@
 - **`picked_names`** on **`route_skills`** (optional): in **`embedding`** / **`full`** modes, supplying **`picked_names`** skips auto-pick and uses the host list (unchanged behavior, now documented).
 - **`skillforge_bootstrap`** returns an error when **`SKILLFORGE_ROUTER_MODE=host`** (use two-step **`route_skills`** + **`materialize_project`**).
 - **CLI:** **`skillforge route --picked-names=a,b`** mirrors MCP finalize. **`--json-meta`** includes **`host_pick_shortlist`** when applicable.
-- **Cursor (global `/skillforge`)** and **Claude Code**: on **`skillforge install`** / first-run setup, Skillforge writes **`~/.cursor/commands/skillforge.md`** and/or **`~/.claude/commands/skillforge.md`** when each environment is detected; **`skillforge hosts init`** updates both without Python setup. Opt out: **`SKILLFORGE_SKIP_CURSOR_SETUP`**, **`SKILLFORGE_SKIP_CLAUDE_CODE_SETUP`**. Force: **`SKILLFORGE_CURSOR_GLOBAL_COMMAND`**, **`SKILLFORGE_CLAUDE_CODE_GLOBAL_COMMAND`**. **`--force-cursor`** replaces managed files. **Claude Desktop** remains detect-only + MCP merge hint.
+- **Cursor (global `/skillforge`)** and **Claude Code**: on **`skillforge install`** / first-run setup, Skillforge writes **`~/.cursor/commands/skillforge.md`** and/or **`~/.claude/commands/skillforge.md`** when each environment is detected; **`skillforge hosts init`** updates both without Python setup. Opt out: **`SKILLFORGE_SKIP_CURSOR_SETUP`**, **`SKILLFORGE_SKIP_CLAUDE_CODE_SETUP`**. Force: **`SKILLFORGE_CURSOR_GLOBAL_COMMAND`**, **`SKILLFORGE_CLAUDE_CODE_GLOBAL_COMMAND`**. **`--force-cursor`** (since **0.11.9**): Cursor-only + overwrite managed Cursor file; use **`--force`** or **`--hosts=all`** to refresh both hosts. **Claude Desktop** remains detect-only + MCP merge hint.
 - **MCP** server version **0.9.0**; **`materialize_project`** writes per-repo **`.cursor/commands`** and **`.claude/commands`** **`/skillforge`** with **`skill_names`**.
 
 ## 0.8.0

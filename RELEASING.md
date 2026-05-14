@@ -32,11 +32,11 @@ Create one at [npm → Access Tokens](https://www.npmjs.com/settings/~/tokens) (
 2. **MCP `serverInfo.version`** matches **`package.json`** automatically (**[`python/app/npm_pkg_version.py`](python/app/npm_pkg_version.py)** **`published_package_version()`** — used from **`python/app/mcp_server.py`**). Operators can override via **`SKILLFORGE_MCP_SERVER_VERSION`**; do **not** hand-edit a second copy of semver in Python.
 3. Commit and **`git push origin main`**. Wait for **CI** to pass.
 4. Tag **`v` + the value of **`package.json` `version`**, push to **`origin`**, e.g.:  
-   `git tag v0.11.7 && git push origin v0.11.7`  
-   (**Replace **`v0.11.7`** with your semver** when releasing a newer number.)
+   `git tag v0.11.18 && git push origin v0.11.18`  
+   (**Replace **`v0.11.18`** with your semver** when releasing a newer number.)
 5. Open **Actions → Skillforge release**. The job will **fail the version check** if the tag does not match `package.json`.
 6. Confirm on npm: `npm view @heytherevibin/skillforge version`  
-   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.11.7`**) and the `.tgz` asset.
+   Confirm the **GitHub Release** exists with title **`Skillforge <tag>`** (e.g. **`Skillforge v0.11.18`**) and the `.tgz` asset.
 
 Scoped packages require a **public** publish; the workflow already runs `npm publish --access public`.
 
@@ -77,18 +77,21 @@ The **minimum** number of **`skills/**/**/SKILL.md`** files required in CI is **
 ```bash
 node --check bin/cli.js && node --check lib/packs.js && node --check lib/user-env-profile.js
 npm test
+cd python && PYTHONPATH=. python3 -m app.verify_route_memory_cli && cd ..
 ```
 
 Python (syntax only)—the **authoritative** module list is in **`.github/workflows/ci.yml`** (step “Check Python syntax”). Example:
 
 ```bash
 for f in \
-  python/app/main.py python/app/mcp_server.py python/app/events_cli.py python/app/materialize.py \
-  python/app/db_paths.py python/app/route_cli.py python/app/mcp_contract.py python/app/chunking.py \
+  python/app/replay_cli.py python/app/main.py python/app/router_mode.py python/app/mcp_server.py python/app/events_cli.py \
+  python/app/materialize.py python/app/db_paths.py python/app/route_cli.py python/app/mcp_contract.py \
+  python/app/route_decision_trace.py python/app/route_eval_ingest.py python/app/chunking.py \
   python/app/project_index.py python/app/index_cli.py python/app/context_fusion.py python/app/redaction.py \
-  python/app/route_policies.py python/app/routing_signals.py python/app/route_quality.py \
+  python/app/route_policies.py python/app/route_policy_shadow.py python/app/route_memories.py python/app/explain_route.py python/app/tools_cli.py python/app/weight_semantics.py python/app/events_query.py \
+  python/app/router_llm.py python/app/routing_signals.py python/app/route_quality.py \
   python/app/route_eval_harness.py python/app/eval_cli.py python/app/health_cli.py \
-  python/app/feedback_meta.py python/app/weights_cli.py; do
+  python/app/feedback_meta.py python/app/weights_cli.py python/app/verify_route_memory_cli.py; do
   python3 -m py_compile "$f"
 done
 ```

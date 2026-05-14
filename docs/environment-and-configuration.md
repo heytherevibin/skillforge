@@ -44,10 +44,11 @@ Below is reference text from the published operator docs. Defaults and parsing l
 | `SKILLFORGE_TRANSPORT` | Set **`mcp`** by **`skillforge mcp`** only. |
 | `SKILLFORGE_ROUTER_LLM_BACKEND` | Standalone/non-MCP: **`openai_compatible`** uses **`OPENAI_API_BASE`**, etc. Ignored under MCP transport. |
 | `OPENAI_API_BASE`, `SKILLFORGE_OPENAI_API_BASE`, `OPENAI_API_KEY`, `SKILLFORGE_OPENAI_ROUTER_MODEL` | OpenAI-compatible router defaults. |
-| `SKILLFORGE_AGENT_MODEL`, `SKILLFORGE_AGENT_API_KEY`, `SKILLFORGE_AGENT_API_BASE` | **`skillforge agent`** (**also **`OPENAI_*`** fallbacks). || `SKILLFORGE_EMBED_MODEL`, `SKILLFORGE_ROUTER_MODEL` | Embedding + Anthropic router model ids. |
+| `SKILLFORGE_AGENT_MODEL`, `SKILLFORGE_AGENT_API_KEY`, `SKILLFORGE_AGENT_API_BASE` | **`skillforge agent`** (**also **`OPENAI_*`** fallbacks). |
+| `SKILLFORGE_EMBED_MODEL`, `SKILLFORGE_ROUTER_MODEL` | Embedding + Anthropic router model ids. |
 | `SKILLFORGE_TOP_K`, `SKILLFORGE_MAX_ACTIVE` | Shortlist size and simultaneous skills cap. |
 | `SKILLFORGE_REROUTE_THRESHOLD` | Re-route sensitivity (Jaccard distance). |
-| `SKILLFORGE_ROUTER_CONV_MAX_TURNS`, `SKILLFORGE_ROUTER_CONV_MSG_CHARS` | Conversation fused into embedding/hybrid routing query (**0** turns = prompt-only). |
+| `SKILLFORGE_ROUTER_CONV_MAX_TURNS`, `SKILLFORGE_ROUTER_CONV_MSG_CHARS` | Conversation fused into embedding/hybrid routing query (**0** turns = prompt-only). MCP preset: **`skillforge mcp config --companion`** (**`6`** / **`400`** defaults). Hosts should pass **`route_skills`** **`conversation`** when turns > **0**. See **[MCP integration — Companion preset](mcp-integration.md#companion-preset-mcp-json)**. |
 | `SKILLFORGE_ROUTER_PROMPT_HISTORY_MSGS`, `SKILLFORGE_ROUTER_PROMPT_HISTORY_CHARS` | Conversation shown into router LLM prompts. |
 | `SKILLFORGE_ROUTER_CATALOG_PREVIEW_CHARS` | Truncation in router catalog excerpts. |
 | `SKILLFORGE_ROUTER_HYBRID`, `SKILLFORGE_ROUTER_HYBRID_ALPHA` | Hybrid sparse+dense (**`off`**, **`keyword`**, **`bm25`**). |
@@ -60,15 +61,22 @@ Below is reference text from the published operator docs. Defaults and parsing l
 | `SKILLFORGE_MCP_USER_ID`, `SKILLFORGE_PROJECT_ROOT` | User scoping + DB/project resolution helpers. |
 | `SKILLFORGE_MATERIALIZE_HOSTS` | Default host resolution when **`materialize_project`** **`hosts`** is **`auto`**. |
 | `SKILLFORGE_ROUTE_POLICIES`, `SKILLFORGE_ROUTE_POLICIES_FILE` | Policies JSON (invalid JSON ⇒ stderr warning + empty rules — see Troubleshooting). |
+| `SKILLFORGE_ROUTE_POLICIES_SHADOW`, `SKILLFORGE_ROUTE_POLICIES_SHADOW_FILE` | Optional **shadow** policy JSON (same overlay shape as primary). When set, Skillforge runs a second embedding shortlist for comparison and attaches **`route_quality.policy_shadow`** — **does not** change primary routing or regex rule merges. Inline wins over file if both are set. Shadow uses the **pre-project-notes** embedding query (**prompt + optional operator memories**, not primary **`project_notes`**). |
+| `SKILLFORGE_ROUTE_MEMORY`, `SKILLFORGE_ROUTE_MEMORY_MAX_CHARS`, `SKILLFORGE_ROUTE_MEMORY_MAX_ROWS`, `SKILLFORGE_ROUTE_MEMORY_DEFAULT_TTL_DAYS` | When **`SKILLFORGE_ROUTE_MEMORY`** is truthy, active SQLite operator memories (MCP **`route_memory_*`**) are fused into the embedding routing query before policy **`project_notes`**. Caps bound rows/chars; default TTL applies on append when **`ttl_days`** is omitted. |
+| `SKILLFORGE_ROUTE_MEMORY_DEDUP` | Truthy ⇒ **`route_memory_append`** updates an existing non-expired row when **whitespace-normalised** **`body`** matches (same **`user_id`** + **`project_scope`**), refreshing **`created_at`**, **`importance=max`**, TTL extended to later **`expires_at`**. |
+| `SKILLFORGE_ROUTE_MEMORY_IMPORTANCE_HALF_LIFE_DAYS` | When set (>0), fusion **`fetch`**/`merge` and **`route_memory_list`** rank by **`importance × 2^(-age_days/H)`** (read-time; stored **`importance`** unchanged). |
+| `SKILLFORGE_ROUTE_TRACE_LEVEL` | **`off`** (default) \| **`compact`** \| **`full`** — adds MCP **`route_skills`** **`_meta.decision_trace`** (+ **`trace_digest`** / optional **`decision_trace`** embedded in **`events`** when **`full`**). Correlation **`routing_correlation_id`** is always returned on routed responses. |
 | `SKILLFORGE_HOST_PICK_MAX`, `SKILLFORGE_HOST_PICK_LINE_CHARS` | Host-mode shortlist formatting. |
 | `SKILLFORGE_ROUTE_AMBIGUITY_COS_MARGIN`, `SKILLFORGE_ROUTE_AMBIGUITY_ROUTE_MARGIN` | **`route_quality`** ambiguity heuristics. |
 | `SKILLFORGE_ROUTE_AMBIGUITY_DISABLE` | Disable ambiguity tier heuristics. |
 | `SKILLFORGE_PICK_DIVERSIFY`, `SKILLFORGE_PICK_MAX_PER_SOURCE` | Per-source pick thinning before policy merge. |
+| `SKILLFORGE_WEIGHT_HALF_LIFE_DAYS` | When set (>0), routing applies read-time freshness on stored **`skill_weights.weight`** (see **`feedback_effect.weight_formula`**): `effective = stored × 2^(-age_days/H)`. Omit for legacy unchanged bias. |
+| `SKILLFORGE_ROUTER_LLM_RETRIES` | Max attempts for **`router_llm`** Haiku/OpenAI-complete phases (default **`1`** = previous single try; capped at **8**). Exponential backoff on retryable failures. |
 | Paths | **`SKILLFORGE_BUNDLED_SKILLS`**, **`SKILLFORGE_USER_SKILLS`**, **`SKILLFORGE_DB_PATH`** (normally set by CLI). |
 | Skill manifests | **`SKILLFORGE_SKILL_MANIFEST_STRICT`** — invalid skills skipped at catalog load (**`skills lint`**). |
 | Project index | **`SKILLFORGE_INDEX_MAX_FILE_BYTES`**, **`SKILLFORGE_INDEX_IGNORE_DIRS`**. |
 | Hot reload | **`SKILLFORGE_SKILL_HOT_RELOAD`**, **`SKILLFORGE_WATCH_SKILLS_INTERVAL`**, **`SKILLFORGE_MCP_LIST_CHANGED`**. |
-| Editor hooks install | **`SKILLFORGE_SKIP_CURSOR_SETUP`**, **`SKILLFORGE_SKIP_CLAUDE_CODE_SETUP`**, **`SKILLFORGE_CURSOR_GLOBAL_COMMAND`**, **`SKILLFORGE_CLAUDE_CODE_GLOBAL_COMMAND`**. |
+| Editor hooks install | **`SKILLFORGE_SKIP_CURSOR_SETUP`**, **`SKILLFORGE_SKIP_CLAUDE_CODE_SETUP`**, **`SKILLFORGE_CURSOR_GLOBAL_COMMAND`**, **`SKILLFORGE_CLAUDE_CODE_GLOBAL_COMMAND`**. CLI (**0.11.10**+): **`--hosts=`** · **`--force-cursor`** · **`--force-claude`** / **`--force-claude-code`** · both force ⇒ all hosts · **`--only-cursor`** / **`--only-claude-code`** · **`--force`**. CLI (**0.11.11**+): **`skillforge help --ui`**, **`--browse`**. CLI / MCP (**0.11.12**+): **`route_skills` `dry_run`**, **`SKILLFORGE_ROUTE_TRACE_LEVEL`**, **`routing_correlation_id`**. Regression (**0.11.13**+): **`skillforge route-eval ingest`**. Policy shadow (**0.11.14**+): **`SKILLFORGE_ROUTE_POLICIES_SHADOW*`**, MCP **`1.10`**. Ops (**0.11.15**+): **`SKILLFORGE_WEIGHT_HALF_LIFE_DAYS`**, **`skillforge events prune --execute`**, **`skillforge replay`** time/type filters, **`SKILLFORGE_ROUTER_LLM_RETRIES`**, **`idx_events_user_type_ts`**. Operator memories (**0.11.16**+): **`SKILLFORGE_ROUTE_MEMORY*`**, **`route_memory_*`**, MCP **`1.11`**. Event snapshot + decay/dedup (**0.11.17**+): **`events.route_memory`**, **`SKILLFORGE_ROUTE_MEMORY_DEDUP`**, **`SKILLFORGE_ROUTE_MEMORY_IMPORTANCE_HALF_LIFE_DAYS`**, **`python -m app.verify_route_memory_cli`**. MCP companion preset (**0.11.18**+): **`skillforge mcp config --companion`**, **`capabilities.mcp_companion`**. |
 | **`SKILLFORGE_MCP_SERVER_VERSION`** | Overrides **`capabilities`** / MCP reported semver (**`published_package_version()`**). |
 
 ---

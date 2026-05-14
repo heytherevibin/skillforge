@@ -16,6 +16,7 @@ from app.route_policies import (
     merge_project_notes_into_route_query,
     parse_routing_overlay,
 )
+from app.route_memories import merge_operator_memories_into_route_query
 from app.routing_signals import build_route_query_text
 
 
@@ -68,11 +69,14 @@ async def compute_explain_route(
         by_name=router._by_name,
         audit_out=overlay_audit,
     )
-    route_query = merge_project_notes_into_route_query(
-        build_route_query_text(prompt, conversation),
-        project_notes,
-        project_root,
+    route_query_base = build_route_query_text(prompt, conversation)
+    rq_mem, mem_meta = merge_operator_memories_into_route_query(
+        route_query_base,
+        con,
+        user_id=user_id,
+        project_root=project_root,
     )
+    route_query = merge_project_notes_into_route_query(rq_mem, project_notes, project_root)
     facets = router.shortlist_with_facets(
         route_query,
         con,
@@ -136,6 +140,7 @@ async def compute_explain_route(
     }
     if routing_ov is not None:
         explain_raw["routing_overlay"] = routing_ov
+    explain_raw["route_memory"] = mem_meta
 
     explain = sanitize_explain_payload(explain_raw)
 

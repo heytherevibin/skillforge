@@ -4,7 +4,7 @@
 
 All Python CLIs honour the merged environment (**`buildEnv`** in **`bin/cli.js`**). Prefer **`skillforge …`** rather than invoking **`python -m app.*`** manually unless you are developing core modules.
 
-Run **`skillforge --help`** (or **`node bin/cli.js --help`**) for the condensed matrix; **`skillforge <cmd> --help`** forwards submodule help (**`route`**, **`agent`**, **`tools`**, …).
+Run **`skillforge --help`** (or **`node bin/cli.js --help`**) for the condensed matrix (**`stderr`**, MCP-safe). Optional: **`skillforge help --ui`** (**`SKILLFORGE_HELP_UI=panels`** on a TTY **`stderr`**) renders boxed sections; **`skillforge help --browse`** opens an interactive section menu (TTY only; non-TTY drops to plain help plus a note). **`skillforge <cmd> --help`** forwards submodule help (**`route`**, **`agent`**, **`tools`**, …).
 
 ## Launch surface (by concern)
 
@@ -32,7 +32,7 @@ Run **`skillforge --help`** (or **`node bin/cli.js --help`**) for the condensed 
 | **`skillforge events …`** | Tail SQLite routing / feedback events (**`--watch`**). |
 | **`skillforge replay …`** | Timeline reconstructor across stored events (**`--session-id`**). |
 | **`skillforge health …`** | Path + catalogue checks (**`--quick`** skips heavyweight embed/router load); JSON via **`--json`**. **`user_env_profile`** row notes whether **`~/.skillforge/env`** exists. |
-| **`skillforge route-eval …`** | Fixture embedding harness (CI consumes **`fixtures/route_eval/*.json`**). |
+| **`skillforge route-eval …`** | Fixture embedding harness (CI: **`fixtures/route_eval/*.json`**). **`skillforge route-eval ingest -o …`** exports **`route`** / **`host_shortlist`** **`events`** rows to a fixture (**prompts are telemetry snippets, ~≤300 chars**). See **`python -m app.eval_cli ingest --help`**. |
 | **`skillforge weights export|import …`** | Portable snapshots of **`skill_weights`**. |
 
 ### Setup / ergonomics
@@ -48,6 +48,7 @@ Run **`skillforge --help`** (or **`node bin/cli.js --help`**) for the condensed 
 
 | Flag / env | Behaviour |
 |------------|-----------|
+| **`--dry-run`** | Same routing output as MCP **`route_skills` `dry_run`** — skips sessions, SQLite route telemetry, skill use counters, and **`.skillforge/last_route.json`**. |
 | **`-i`** or **`SKILLFORGE_ROUTE_INTERACTIVE=1`** | Prompt for ranks after **`host`** shortlists (TTY only). |
 | **`--json`** | Single envelope with **`phase`** markers for scripting (**`route_cli`**). |
 | **`--picked-names=id1,id2`** | Implements second leg of **`host`** finalize. |

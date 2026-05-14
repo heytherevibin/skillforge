@@ -3,9 +3,9 @@
  * skillforge — skill orchestrator co-tool for Claude (MCP-first)
  *
  * Usage:
- *   skillforge, skillforge --help   Show help (primary path: MCP, not a web app)
+ *   skillforge, skillforge --help   Help on stderr (MCP-safe); skillforge help --ui / --browse (TTY)
  *   skillforge mcp                   MCP stdio server (Claude / Cursor / …)
- *   skillforge events [--watch] [--limit=N]     Print SQLite routing events
+ *   skillforge events [--watch] [--limit=N]     Print SQLite events; subcommand prune (--execute deletes)
  *   skillforge replay [--session-id]             Chronological SQLite event replay
  *   skillforge tools <cmd> [--json]               MCP tool parity (see skillforge tools -h)
  *   skillforge tips                             Short MCP + terminal cheatsheet
@@ -13,12 +13,12 @@
  *   skillforge route [words…] [--prompt=…]     Same routing as MCP route_skills (terminal)
  *   skillforge index --project-root=…            Chunk/embed repo files for project RAG
  *   skillforge health [--quick] [--json]         Preflight: paths, catalog, optional router load
- *   skillforge route-eval --fixture=…            Embedding-only regression cases (CI-friendly)
+ *   skillforge route-eval --fixture=…            Embedding-only regression; **`route-eval ingest`** exports DB → fixture
  *   skillforge weights export|import             Snapshot learned weights (JSON)
- *   skillforge install               One-time Python venv + deps (+ Cursor /skillforge when detected)
+ *   skillforge install               Python venv + deps + host templates (**`--force-cursor`** = Cursor-only; **`--force-claude`** = Claude-only; both = all)
  *   skillforge config path|init|validate …  ~/.skillforge/env (dotenv-style profile + linter)
- *   skillforge hosts init [--force]  Install global /skillforge for Cursor + Claude Code (no Python setup)
- *   skillforge cursor init [--force]  Same as hosts init (alias)
+ *   skillforge hosts init [--force] [--hosts=cursor|claude-code|all] [--force-cursor|--force-claude|--only-cursor|--only-claude-code]  Install managed /skillforge (no Python setup)
+ *   skillforge cursor init [--force] [--hosts=…]  Same flags as **`hosts init`**
  *   skillforge skills list|add|remove|init|lint … ; pack … ; reset
  */
 
@@ -28,6 +28,7 @@ const { spawn, spawnSync } = require('child_process');
 const os = require('os');
 const packs = require('../lib/packs');
 const userEnvProfile = require('../lib/user-env-profile');
+const { renderHelp, parseHelpOptions, runHelpBrowse } = require('../lib/help-render');
 
 const PKG_ROOT = path.resolve(__dirname, '..');
 const PKG = require(path.join(PKG_ROOT, 'package.json'));
@@ -146,23 +147,39 @@ function runSetup() {
   // 3. Install Python deps
   info('Installing Python dependencies (this is the slow part)...');
   const reqFile = path.join(PKG_ROOT, 'python', 'requirements.txt');
-  const pipR = spawnSync(venvPip(), ['install', '--upgrade', '--quiet', '-r', reqFile], {
-    encoding: 'utf8',
-    stdio: ['inherit', 'pipe', 'pipe'],
-  });
-  if (pipR.stdout) process.stderr.write(pipR.stdout);
-  if (pipR.stderr) process.stderr.write(pipR.stderr);
-  if (pipR.status !== 0) {
-    err('Failed to install Python dependencies.');
+  if (!fs.existsSync(reqFile)) {
+    err(`requirements.txt missing at ${reqFile}`);
     process.exit(1);
+  }
+  const pipQuiet = spawnSync(
+    venvPip(),
+    ['install', '--upgrade', '--quiet', '-r', reqFile],
+    { encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'] },
+  );
+  if (pipQuiet.stdout) process.stderr.write(pipQuiet.stdout);
+  if (pipQuiet.stderr) process.stderr.write(pipQuiet.stderr);
+  if (pipQuiet.status !== 0) {
+    err('Failed to install Python dependencies (--quiet pip). Retrying once with verbose output...');
+    log(c.dim(`  pip: ${venvPip()}\n  -r ${reqFile}\n  python (venv): ${venvPython()}`));
+    const pipVerbose = spawnSync(
+      venvPip(),
+      ['install', '--upgrade', '-r', reqFile],
+      { encoding: 'utf8', stdio: ['inherit', 'inherit', 'inherit'] },
+    );
+    if (pipVerbose.status !== 0) {
+      err('Failed to install Python dependencies.');
+      process.exit(1);
+    }
   }
   ok('Python dependencies installed');
 
   // 4. Cursor / MCP host hooks (no Python required)
   try {
     const hostSetup = require('../lib/host-setup');
+    const { hostScope, force } = hostSetup.resolveHostInstallScope(process.argv.slice(2));
     hostSetup.reportHostsAndInstallAgentCommands({
-      force: process.argv.includes('--force-cursor'),
+      hostScope,
+      force,
       pkgRoot: PKG_ROOT,
       pkgVersion: PKG_VERSION,
       log,
@@ -311,11 +328,24 @@ function runConfigCmd() {
 }
 
 function printMcpConfig() {
-  setupIfNeeded();
+  // JSON snippet only — do not bootstrap venv here (run `skillforge install` before `skillforge mcp`).
+  ensureDirs();
   const useLocal = args.includes('--local');
   const withKey = args.includes('--with-anthropic');
   const withEnv = args.includes('--with-env');
+  const withCompanion = args.includes('--companion');
   const cliJs = path.join(PKG_ROOT, 'bin', 'cli.js');
+  /** @type {Record<string, string>} */
+  const companionEnv = withCompanion
+    ? {
+        SKILLFORGE_ROUTER_CONV_MAX_TURNS: '6',
+        SKILLFORGE_ROUTER_CONV_MSG_CHARS: '400',
+      }
+    : {};
+  /** @param {Record<string, string>} base */
+  function withCompanionMerge(base) {
+    return withCompanion ? { ...base, ...companionEnv } : base;
+  }
   /** @type {Record<string, unknown>} */
   const entry = useLocal
     ? {
@@ -327,23 +357,30 @@ function printMcpConfig() {
         args: ['-y', NPM_PKG_NAME, 'mcp'],
       };
   if (withKey) {
-    entry.env = {
+    entry.env = withCompanionMerge({
       SKILLFORGE_ROUTER_MODE: 'auto',
       ANTHROPIC_API_KEY: 'sk-ant-…',
-    };
+    });
   } else if (withEnv) {
-    entry.env = {
+    entry.env = withCompanionMerge({
       SKILLFORGE_ROUTER_MODE: 'host',
-    };
+    });
+  } else if (withCompanion) {
+    entry.env = withCompanionMerge({
+      SKILLFORGE_ROUTER_MODE: 'host',
+    });
   }
   const out = { mcpServers: { skillforge: entry } };
   process.stdout.write(JSON.stringify(out, null, 2) + '\n');
   let note =
     'Merge into ~/.cursor/mcp.json, Claude Desktop config, etc. --local uses this package checkout. ' +
     'Routing: default host (two-step picked_names); --with-anthropic ⇒ SKILLFORGE_ROUTER_MODE=auto plus ANTHROPIC_API_KEY placeholder. ' +
-    '--with-env adds server.env SKILLFORGE_ROUTER_MODE=host explicitly (combine with ~/.skillforge/env for secrets).';
+    '--with-env adds server.env SKILLFORGE_ROUTER_MODE=host explicitly (combine with ~/.skillforge/env for secrets). ' +
+    '--companion adds SKILLFORGE_ROUTER_CONV_MAX_TURNS=6 and SKILLFORGE_ROUTER_CONV_MSG_CHARS=400 (merge with above modes; hosts should pass route_skills `conversation` for continuity).';
   if (withKey && withEnv) {
-    note += ' When both --with-env and --with-anthropic are passed, the emitted env matches --with-anthropic only.';
+    note +=
+      ' When both --with-env and --with-anthropic are passed, the emitted env matches --with-anthropic' +
+      (withCompanion ? ' plus --companion conversation knobs.' : ' only.');
   }
   process.stderr.write(c.dim(`${note}\n`));
 }
@@ -394,7 +431,8 @@ function runTipsCmd() {
 
 function runToolsCmd() {
   setupIfNeeded();
-  const sub = args.slice(2);
+  // args starts at subcommand → ["tools", <verb>, ...]; forward everything after "tools"
+  const sub = args.slice(1);
   const proc = spawn(venvPython(), ['-m', 'app.tools_cli', ...sub], {
     stdio: 'inherit',
     env: buildEnv(),
@@ -548,8 +586,10 @@ function reset() {
 
 function runHostsInit() {
   const hostSetup = require('../lib/host-setup');
+  const { hostScope, force } = hostSetup.resolveHostInstallScope(args);
   hostSetup.reportHostsAndInstallAgentCommands({
-    force: args.includes('--force') || args.includes('--force-cursor'),
+    hostScope,
+    force,
     pkgRoot: PKG_ROOT,
     pkgVersion: PKG_VERSION,
     log,
@@ -559,89 +599,23 @@ function runHostsInit() {
   });
 }
 
-function showHelp() {
-  const colW = 48;
-  const row = (cmd, desc) => {
-    const s = `${cmd}`;
-    const padLen = Math.max(2, colW - s.length);
-    const pad = ' '.repeat(padLen);
-    return `  ${c.cyan(s)}${pad}${desc}`;
-  };
-  const sec = title => `\n${c.bold(title)}\n${c.dim('  ' + '─'.repeat(72))}`;
-  log('');
-  log(c.bold(`Skillforge`) + `  ${c.dim('local SKILL.md orchestration')}`);
-  log(
-    `${c.dim('Version')} ${PKG_VERSION}${c.dim('  ·  ')}Enterprise automation and MCP hosts share the same Python engine.`,
-  );
-  log(`${c.dim('State directory')}  ${CONFIG_DIR}`);
-  log(
-    `\n${c.dim('PRIMARY INTEGRATION (production workloads):')} ${c.bold('stdio MCP')} — ${c.dim('configure')} ${c.cyan('skillforge mcp config')} ${c.dim(', then restart the IDE / agent.')}`,
-  );
-  log(
-    `${c.dim('TERMINAL (operators, scripting, CI):')} ${c.dim('routing, observability, and')} ${c.cyan('skillforge tools')} ${c.dim('(MCP tool parity).')}`,
-  );
+async function showHelp(argvForFlags = args) {
+  const opts = parseHelpOptions(argvForFlags);
+  const ctx = { pkgVersion: PKG_VERSION, configDir: CONFIG_DIR, npmPkgName: NPM_PKG_NAME };
 
-  log(sec('Model Context Protocol'));
-  log(row('skillforge mcp', 'Start JSON-RPC MCP server over stdio (Cursor, Claude Desktop, compatible hosts)'));
-  log(
-    row(
-      'skillforge mcp config [--local] [--with-anthropic] [--with-env]',
-      'Emit MCP host JSON (--with-env adds SKILLFORGE_ROUTER_MODE=host)',
-    ),
-  );
-  log(`  ${c.dim('Default routing')}  SKILLFORGE_ROUTER_MODE=host · two-step shortlist then picked_names`);
-  log(
-    `  ${c.dim('Minimal npx host entry')}  ${JSON.stringify({
-      mcpServers: {
-        skillforge: { command: 'npx', args: ['-y', NPM_PKG_NAME, 'mcp'] },
-      },
-    })}`,
-  );
+  if (opts.browse) {
+    const out = await runHelpBrowse(ctx);
+    if (typeof out === 'string' && out.length > 0) {
+      process.stderr.write(`\n${out}\n`);
+    }
+    return;
+  }
 
-  log(sec('Routing & context'));
-  log(row('skillforge agent [--prompt TEXT]', 'Standalone chat agent · OpenAI-compatible API + MCP tool handlers'));
-  log(row('skillforge route [TEXT…]', 'Interactive / scripted routing · --json · -i · --explain (see route --help)'));
-  log(row('skillforge index --project-root=…', 'Project text index RAG chunks (SQLite project_chunks)'));
-  log(row('skillforge tips', 'Short operator reference (routing, env, MCP host mode)'));
-
-  log(sec('MCP tool parity (CLI)'));
-  log(row('skillforge tools …', 'Subcommands mirror MCP tools (same handlers)'));
-  log(
-    row(
-      'skillforge tools --help',
-      'search · explain · get · catalog · feedback · disable · referenced',
-    ),
-  );
-  log(
-    `  ${c.dim('└')} ${c.dim('materialize · bootstrap · capabilities · router-status · index-status · weights-snapshot · events-recent')}`,
-  );
-  log(row('skillforge tools … --json', 'Raw tool envelope (content + _meta) for automation'));
-
-  log(sec('Observability & diagnostics'));
-  log(row('skillforge events …', '--watch routing / usage SQLite tail'));
-  log(row('skillforge replay …', 'Chronological event timeline (--session-id, --json)'));
-  log(row('skillforge health …', 'Preflight: paths · catalog (--quick skips embed load)'));
-  log(row('skillforge route-eval …', 'Fixture embedding regression harness (CI)'));
-  log(row('skillforge weights export|import …', 'Portable learned weights snapshot'));
-
-  log(sec('Catalog & authoring'));
-  log(row('skillforge skills list|add|remove|init|lint …', 'Filesystem skill trees + scaffold + manifest lint'));
-  log(row('skillforge pack install|list|update|remove …', 'Git-hosted skill bundles'));
-
-  log(sec('Setup & lifecycle'));
-  log(row('skillforge install [--force-cursor]', 'Python venv + deps + optional Cursor / Claude Code slash templates'));
-  log(row('skillforge config path|init|validate …', 'Stable ~/.skillforge/env (dotenv linter: config validate · README)'));
-  log(row('skillforge hosts init · skillforge cursor init', 'Rewrite managed /skillforge host commands (--force)'));
-  log(row('skillforge reset', 'Drop SQLite learning + event history'));
-
-  log(`\n${c.bold('First run')}  ${c.cyan('skillforge install')} ${c.dim('or')} ${c.cyan(`npx -y ${NPM_PKG_NAME} install`)}`);
-  log(
-    c.dim(
-      '  Auto-provisions ~/.skillforge/venv · optional Cursor + Claude Code /skillforge commands ' +
-        '(SKILLFORGE_SKIP_CURSOR_SETUP, SKILLFORGE_SKIP_CLAUDE_CODE_SETUP).',
-    ),
-  );
-  log(`\n${c.bold('Documentation')}  README.md + docs/ · npm/GitHub (${NPM_PKG_NAME})`);
+  const usePanels =
+    opts.ui &&
+    typeof process.stderr.isTTY === 'boolean' &&
+    process.stderr.isTTY;
+  process.stderr.write(`\n${renderHelp(usePanels ? 'panels' : 'plain', ctx, {})}\n`);
 }
 
 // ---- main ----
@@ -649,19 +623,19 @@ async function main() {
   dropLegacyAuthJsonIfPresent();
 
   if (cmd === 'help') {
-    showHelp();
+    await showHelp(args);
     return;
   }
 
   const wantsCliHelp = args.includes('--help') || args.includes('-h');
   if (wantsCliHelp && (cmd === undefined || cmd === '--help' || cmd === '-h')) {
-    showHelp();
+    await showHelp(args);
     return;
   }
 
   switch (cmd) {
     case undefined:
-      showHelp();
+      await showHelp(args);
       break;
     case 'events':
       runEventsCmd();
@@ -782,7 +756,7 @@ async function main() {
     }
     default:
       err(`Unknown command: ${cmd}`);
-      showHelp();
+      await showHelp(args);
       process.exit(1);
   }
 }

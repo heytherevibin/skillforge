@@ -40,12 +40,24 @@ from app.router_llm import (
 )
 from app.feedback_meta import build_feedback_effect
 from app.pick_diversify import diversify_picked_names
+from app.route_memories import (
+    compact_route_memory_for_event,
+    ensure_route_memory_schema,
+    merge_operator_memories_into_route_query,
+)
 from app.route_policies import (
     build_routing_overlay_payload,
     load_route_policies_config,
+    load_shadow_route_policies_config,
     merge_policy_includes,
     merge_project_notes_into_route_query,
     parse_routing_overlay,
+)
+from app.route_policy_shadow import attach_policy_shadow_to_route_quality
+from app.route_decision_trace import (
+    build_decision_trace,
+    decision_digest,
+    route_trace_level,
 )
 from app.route_quality import build_route_quality, coerce_route_float
 from app.routing_signals import (
@@ -59,6 +71,7 @@ from app.routing_signals import (
 )
 from app.router_mode import normalise_skillforge_router_mode
 from app.skill_manifest import skill_manifest_strict_exclusion, validate_skill_manifest
+from app.weight_semantics import effective_learned_weight
 
 # ---------- Config (env-driven so the Node wrapper controls paths) ----------
 
@@ -360,6 +373,7 @@ def init_db(db_file: Path | None = None):
         );
         CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts DESC);
         CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, ts DESC);
+        CREATE INDEX IF NOT EXISTS idx_events_user_type_ts ON events(user_id, event_type, ts);
     """)
     # Backward-compat: if upgrading from 0.1.0 schema, add user_id column where missing.
     for table in ("events", "sessions"):
@@ -368,6 +382,7 @@ def init_db(db_file: Path | None = None):
         except sqlite3.OperationalError:
             pass  # already exists
     ensure_project_index_schema(con)
+    ensure_route_memory_schema(con)
     con.commit()
     return con
 
@@ -382,13 +397,18 @@ def log_event(con, session_id, event_type, payload, user_id=""):
 
 def get_skill_weight(con, name, user_id=""):
     cur = con.execute(
-        "SELECT weight, disabled FROM skill_weights WHERE user_id = ? AND skill_name = ?",
+        "SELECT weight, disabled, updated_at FROM skill_weights WHERE user_id = ? AND skill_name = ?",
         (user_id, name),
     )
     row = cur.fetchone()
     if not row:
         return 0.0, False
-    return row[0], bool(row[1])
+    stored_w, dis, updated_at = float(row[0]), bool(row[1]), row[2]
+    if dis:
+        return stored_w, True
+    ts = float(updated_at) if updated_at is not None else None
+    eff = effective_learned_weight(stored_w, updated_at=ts, now=time.time())
+    return eff, False
 
 
 def update_skill_stat(con, name, field, delta=1, user_id=""):
@@ -1007,6 +1027,7 @@ async def run_route_turn(
     include_project_rag: bool = False,
     picked_names_from_host: list[str] | None = None,
     picked_names_from_host_supplied: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Shared routing + session + telemetry for MCP route_skills and ``skillforge route``.
 
@@ -1015,19 +1036,31 @@ async def run_route_turn(
 
     When ``picked_names_from_host_supplied`` is True, skips rerank/Haiku and uses the supplied names
     (after validation) in any router mode.
+
+    When ``dry_run`` is True, skip session mutations, skill stat increments, and SQLite telemetry for
+    this turn (staging / connector tests).
     """
+    correlation_id = str(uuid.uuid4())
+    trace_lvl = route_trace_level()
     sid = session_id or str(uuid.uuid4())
     t0 = time.time()
-    route_query = build_route_query_text(prompt, conversation)
+    route_query_base = build_route_query_text(prompt, conversation)
     pr = (project_root or "").strip()
     policies_cfg = load_route_policies_config(pr or None)
+    shadow_cfg, shadow_prov = load_shadow_route_policies_config()
     overlay_audit: list[dict[str, Any]] = []
     exclude_skills, routing_boosts, project_notes_raw = parse_routing_overlay(
         policies_cfg,
         by_name=router._by_name,
         audit_out=overlay_audit,
     )
-    route_query = merge_project_notes_into_route_query(route_query, project_notes_raw, pr)
+    rq_mem, mem_meta = merge_operator_memories_into_route_query(
+        route_query_base,
+        con,
+        user_id=user_id,
+        project_root=pr or None,
+    )
+    route_query = merge_project_notes_into_route_query(rq_mem, project_notes_raw, pr)
     notes_effective = bool(project_notes_raw.strip() and pr)
     routing_overlay_meta = build_routing_overlay_payload(
         project_root=pr,
@@ -1081,7 +1114,44 @@ async def run_route_turn(
             haiku_rerank_applied=False,
             pick_path="host_shortlist",
         )
+        attach_policy_shadow_to_route_quality(
+            route_quality,
+            router=router,
+            con=con,
+            route_query_base=rq_mem,
+            project_root=pr,
+            shadow_cfg=shadow_cfg,
+            shadow_provenance=shadow_prov,
+            user_id=user_id,
+            primary_facets=facets,
+            compare_k_preferred=k,
+        )
+        route_quality["route_memory"] = mem_meta
         feedback_effect = build_feedback_effect(con, [], user_id=user_id)
+        cand_nm_host = [s.name for s, _ in candidates]
+        routing_overlay_applied = routing_overlay_meta is not None
+        decision_trace_host = build_decision_trace(
+            trace_id=correlation_id,
+            level=trace_lvl,
+            dry_run=dry_run,
+            host_shortlist_only=True,
+            pick_path="host_shortlist",
+            haiku_rerank_applied=False,
+            policy_rules_loaded=rules_n,
+            routing_overlay_applied=routing_overlay_applied,
+            picked_names=[],
+            candidate_names=cand_nm_host,
+            route_ms=route_ms,
+            route_quality=route_quality,
+        )
+        tdigest_host = decision_digest(
+            picked_names=[],
+            candidate_names=cand_nm_host,
+            pick_path="host_shortlist",
+            host_shortlist_only=True,
+            dry_run=dry_run,
+            route_ms=route_ms,
+        )
         event = {
             "type": "host_shortlist",
             "session_id": sid,
@@ -1094,13 +1164,21 @@ async def run_route_turn(
             "ts": time.time(),
             "host_pick_candidates": rows,
             "policy": {"rules_loaded": rules_n, "audit": []},
+            "route_memory": compact_route_memory_for_event(route_quality.get("route_memory")),
             "route_quality": route_quality,
             "feedback_effect": feedback_effect,
+            "routing_correlation_id": correlation_id,
+            "dry_run": dry_run,
+            "pick_path": "host_shortlist",
+            "trace_digest": tdigest_host,
         }
         if routing_overlay_meta is not None:
             event["routing_overlay"] = routing_overlay_meta
-        log_event(con, sid, "host_shortlist", event, user_id=user_id)
-        con.commit()
+        if trace_lvl == "full" and decision_trace_host:
+            event["decision_trace"] = decision_trace_host
+        if not dry_run:
+            log_event(con, sid, "host_shortlist", event, user_id=user_id)
+            con.commit()
         ret_host: dict[str, Any] = {
             "session_id": sid,
             "picked_names": [],
@@ -1120,6 +1198,9 @@ async def run_route_turn(
             "route_query": route_query,
             "route_quality": route_quality,
             "feedback_effect": feedback_effect,
+            "routing_correlation_id": correlation_id,
+            "dry_run": dry_run,
+            "decision_trace": decision_trace_host,
         }
         if routing_overlay_meta is not None:
             ret_host["routing_overlay"] = routing_overlay_meta
@@ -1293,6 +1374,19 @@ async def run_route_turn(
         pick_path=pick_path,
         pick_diversify=pick_diversify_meta,
     )
+    attach_policy_shadow_to_route_quality(
+        route_quality,
+        router=router,
+        con=con,
+        route_query_base=rq_mem,
+        project_root=pr,
+        shadow_cfg=shadow_cfg,
+        shadow_provenance=shadow_prov,
+        user_id=user_id,
+        primary_facets=facet_list,
+        compare_k_preferred=TOP_K_CANDIDATES,
+    )
+    route_quality["route_memory"] = mem_meta
 
     reasoning_out = reasoning
     safe_prompt_snip = prompt[:300]
@@ -1304,14 +1398,40 @@ async def run_route_turn(
         if reasoning_out:
             reasoning_out, _ = redact_secret_patterns(reasoning_out)
 
-    con.execute(
-        """INSERT INTO sessions (id, user_id, created_at, active_skills, turn_count) VALUES (?, ?, ?, ?, 1)
-           ON CONFLICT(id) DO UPDATE SET active_skills = ?, turn_count = turn_count + 1""",
-        (sid, user_id, time.time(), json.dumps(picked_names), json.dumps(picked_names)),
+    cand_nm_main = [s.name for s, _ in candidates]
+    routing_overlay_applied_main = routing_overlay_meta is not None
+    decision_trace_main = build_decision_trace(
+        trace_id=correlation_id,
+        level=trace_lvl,
+        dry_run=dry_run,
+        host_shortlist_only=False,
+        pick_path=pick_path,
+        haiku_rerank_applied=haiku_rerank_applied,
+        policy_rules_loaded=len(rules_list),
+        routing_overlay_applied=routing_overlay_applied_main,
+        picked_names=picked_names,
+        candidate_names=cand_nm_main,
+        route_ms=route_ms,
+        route_quality=route_quality,
     )
-    con.commit()
-    for n in picked_names:
-        update_skill_stat(con, n, "uses", 1, user_id=user_id)
+    tdigest_main = decision_digest(
+        picked_names=picked_names,
+        candidate_names=cand_nm_main,
+        pick_path=pick_path,
+        host_shortlist_only=False,
+        dry_run=dry_run,
+        route_ms=route_ms,
+    )
+
+    if not dry_run:
+        con.execute(
+            """INSERT INTO sessions (id, user_id, created_at, active_skills, turn_count) VALUES (?, ?, ?, ?, 1)
+               ON CONFLICT(id) DO UPDATE SET active_skills = ?, turn_count = turn_count + 1""",
+            (sid, user_id, time.time(), json.dumps(picked_names), json.dumps(picked_names)),
+        )
+        con.commit()
+        for n in picked_names:
+            update_skill_stat(con, n, "uses", 1, user_id=user_id)
 
     feedback_effect = build_feedback_effect(con, picked_names, user_id=user_id)
 
@@ -1348,12 +1468,20 @@ async def run_route_turn(
             for c in context_items[:24]
         ],
         "host_picked": bool(picked_names_from_host_supplied),
+        "route_memory": compact_route_memory_for_event(route_quality.get("route_memory")),
         "route_quality": route_quality,
         "feedback_effect": feedback_effect,
+        "routing_correlation_id": correlation_id,
+        "dry_run": dry_run,
+        "pick_path": pick_path,
+        "trace_digest": tdigest_main,
     }
     if routing_overlay_meta is not None:
         event["routing_overlay"] = routing_overlay_meta
-    log_event(con, sid, "route", event, user_id=user_id)
+    if trace_lvl == "full" and decision_trace_main:
+        event["decision_trace"] = decision_trace_main
+    if not dry_run:
+        log_event(con, sid, "route", event, user_id=user_id)
     ret_main: dict[str, Any] = {
         "session_id": sid,
         "picked_names": picked_names,
@@ -1366,6 +1494,9 @@ async def run_route_turn(
         "context_items": context_items,
         "route_quality": route_quality,
         "feedback_effect": feedback_effect,
+        "routing_correlation_id": correlation_id,
+        "dry_run": dry_run,
+        "decision_trace": decision_trace_main,
     }
     if routing_overlay_meta is not None:
         ret_main["routing_overlay"] = routing_overlay_meta

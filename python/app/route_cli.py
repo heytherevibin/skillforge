@@ -65,6 +65,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--no-interactive", action="store_true", help="Disable env-driven auto prompts. ")
     p.add_argument("--quiet", action="store_true", help="Less stderr chatter during bootstrap. ")
     p.add_argument("--include-project-rag", action="store_true", help="Needs --project-root. ")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="parity with MCP dry_run — no sessions/telemetry/use counters/last_route write.",
+    )
     return p.parse_args(argv)
 
 
@@ -100,6 +105,9 @@ def _meta(result: dict, *, md_out: str, user_id: str, db_path, skills_map) -> di
         context_items=result.get("context_items"),
         fusion=(result.get("event") or {}).get("context_fusion"),
         context_redaction=(result.get("event") or {}).get("context_redaction"),
+        routing_correlation_id=str(result.get("routing_correlation_id") or ""),
+        dry_run=bool(result.get("dry_run")),
+        decision_trace=result.get("decision_trace") if isinstance(result.get("decision_trace"), dict) else None,
     )
     if result.get("host_pick_shortlist"):
         m["host_pick_shortlist"] = True
@@ -114,6 +122,8 @@ def _explain_lim(v: int) -> int:
 
 def _write_last_route(rr: dict, *, pr: str | None, user_id: str, router, picks_via_interactive: list[str]) -> None:
     if not pr:
+        return
+    if rr.get("dry_run"):
         return
     try:
         root = Path(pr).expanduser().resolve()
@@ -219,6 +229,7 @@ async def _run(args: argparse.Namespace) -> int:
             include_project_rag=bool(args.include_project_rag),
             picked_names_from_host=picks_ini if cli_picked else None,
             picked_names_from_host_supplied=cli_picked,
+            dry_run=bool(args.dry_run),
         )
 
         if tty_interactive and result.get("host_pick_shortlist"):
@@ -271,6 +282,7 @@ async def _run(args: argparse.Namespace) -> int:
                 include_project_rag=bool(args.include_project_rag),
                 picked_names_from_host=chosen,
                 picked_names_from_host_supplied=True,
+                dry_run=bool(args.dry_run),
             )
 
         sid = result["session_id"]

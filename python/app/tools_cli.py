@@ -10,6 +10,7 @@ Examples:
   skillforge tools get --skill-name my_skill --format card
   skillforge tools catalog
   skillforge tools capabilities --json
+  skillforge tools memory-append --body \"Prefer TypeScript strict mode\" --importance 3
 """
 from __future__ import annotations
 
@@ -164,6 +165,21 @@ def build_parser() -> argparse.ArgumentParser:
     ev.add_argument("--limit", type=int, default=25, metavar="N")
     ev.add_argument("--event-type", default="", metavar="TYPE")
 
+    ma = sub.add_parser("memory-append", help="Add route memory (MCP: route_memory_append)")
+    ma.add_argument("--body", required=True, help="Memo text fused into routing when SKILLFORGE_ROUTE_MEMORY is on")
+    ma.add_argument("--skill-hint", default="", metavar="TEXT")
+    ma.add_argument("--importance", type=int, default=0, metavar="N")
+    ma.add_argument("--ttl-days", type=float, default=None, metavar="DAYS", help="Optional expiry (omit = default TTL or none)")
+
+    ml = sub.add_parser("memory-list", help="List route memories (MCP: route_memory_list)")
+    ml.add_argument("--limit", type=int, default=25, metavar="N")
+    ml.add_argument("--include-expired", action="store_true")
+
+    md = sub.add_parser("memory-delete", help="Delete one memory by id (MCP: route_memory_delete)")
+    md.add_argument("--memory-id", required=True, metavar="UUID")
+
+    sub.add_parser("memory-prune-expired", help="Delete expired rows (MCP: route_memory_prune_expired)")
+
     return p
 
 
@@ -258,6 +274,25 @@ async def _async_main(raw: list[str]) -> int:
         et = str(ns.event_type).strip()
         args_e = _merged(ns, {"limit": ns.limit, **({"event_type": et} if et else {})})
         payload = await server.handle_tools_call({"name": "events_recent", "arguments": args_e})
+    elif ns.tool == "memory-append":
+        args_m = _merged(
+            ns,
+            {
+                "body": str(ns.body),
+                "skill_hint": str(ns.skill_hint or ""),
+                "importance": int(ns.importance),
+                **({"ttl_days": float(ns.ttl_days)} if ns.ttl_days is not None else {}),
+            },
+        )
+        payload = await server.handle_tools_call({"name": "route_memory_append", "arguments": args_m})
+    elif ns.tool == "memory-list":
+        args_l = _merged(ns, {"limit": ns.limit, "include_expired": bool(ns.include_expired)})
+        payload = await server.handle_tools_call({"name": "route_memory_list", "arguments": args_l})
+    elif ns.tool == "memory-delete":
+        args_d = _merged(ns, {"memory_id": str(ns.memory_id).strip()})
+        payload = await server.handle_tools_call({"name": "route_memory_delete", "arguments": args_d})
+    elif ns.tool == "memory-prune-expired":
+        payload = await server.handle_tools_call({"name": "route_memory_prune_expired", "arguments": _merged(ns, {})})
     else:  # pragma: no cover
         parser.error(f"unknown tool: {ns.tool}")
 

@@ -30,6 +30,8 @@ def test_build_route_skills_meta_basic() -> None:
     )
     assert meta["schema_version"] == MCP_RESPONSE_SCHEMA_VERSION
     assert "fusion" not in meta
+    assert meta["routing_correlation_id"] == ""
+    assert meta["dry_run"] is False
     assert meta["context_items_count"] == 0
     assert meta["budget"]["chars_project_chunks"] == 0
     assert meta["budget"]["chars_context_items_total"] == meta["budget"]["chars_skill_bodies"]
@@ -252,3 +254,32 @@ def test_build_route_skills_meta_ignores_non_dict_routing_overlay() -> None:
         response_text="x",
     )
     assert "routing_overlay" not in meta
+
+
+def test_build_route_skills_meta_dry_run_and_correlation_fields() -> None:
+    dt = {"digest": "facef00d", "picked_names": []}
+    meta = build_route_skills_meta(
+        result={
+            "candidates": [],
+            "session_id": "s",
+            "rerouted": False,
+            "change": 0.0,
+            "route_ms": 2.5,
+            "routing_correlation_id": "uuid-like",
+            "dry_run": True,
+            "decision_trace": dt,
+        },
+        picked_names=["a"],
+        user_id="u",
+        db_path="/db.sqlite",
+        skills_map={
+            "a": SimpleNamespace(name="a", body="x"),
+        },
+        response_text="out",
+        routing_correlation_id="uuid-like",
+        dry_run=True,
+        decision_trace=dt,
+    )
+    assert meta["routing_correlation_id"] == "uuid-like"
+    assert meta["dry_run"] is True
+    assert meta["decision_trace"] == dt

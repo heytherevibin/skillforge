@@ -2,7 +2,16 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from typing import Any
+
+from app.weight_semantics import (
+    effective_learned_weight,
+    feedback_weight_formula_documentation,
+    freshness_multiplier,
+    routing_applies_documentation,
+    weight_half_life_days,
+)
 
 
 def get_skill_weight_detail(con: sqlite3.Connection, skill_name: str, user_id: str = "") -> dict[str, Any] | None:
@@ -20,8 +29,12 @@ def get_skill_weight_detail(con: sqlite3.Connection, skill_name: str, user_id: s
     uses_i, ref_i = int(uses), int(ref)
     up_i, down_i = int(up), int(down)
     ref_rate = (ref_i / uses_i) if uses_i > 0 else 0.0
-    return {
-        "learned_weight": round(float(w), 4),
+    stored = float(w)
+    now = time.time()
+    ts_f = float(ts) if ts is not None else None
+    eff = stored if bool(dis) else effective_learned_weight(stored, updated_at=ts_f, now=now)
+    out: dict[str, Any] = {
+        "learned_weight": round(eff, 4),
         "uses": uses_i,
         "referenced": ref_i,
         "thumbs_up": up_i,
@@ -29,8 +42,14 @@ def get_skill_weight_detail(con: sqlite3.Connection, skill_name: str, user_id: s
         "net_thumbs": up_i - down_i,
         "reference_rate": round(float(ref_rate), 4),
         "disabled": bool(dis),
-        "updated_at": float(ts) if ts is not None else None,
+        "updated_at": ts_f,
     }
+    if weight_half_life_days() is not None and not bool(dis):
+        out["stored_learned_weight"] = round(stored, 4)
+        out["decay_freshness_multiplier"] = round(
+            freshness_multiplier(updated_at=ts_f, now=now), 6
+        )
+    return out
 
 
 def build_feedback_effect(
@@ -70,7 +89,7 @@ def build_feedback_effect(
         if abs(lw) > 1e-9:
             nonzero += 1
         max_abs = max(max_abs, abs(lw))
-        picked_out.append({
+        entry: dict[str, Any] = {
             "skill": name,
             "has_db_row": True,
             "learned_weight": row["learned_weight"],
@@ -81,12 +100,17 @@ def build_feedback_effect(
             "net_thumbs": row["net_thumbs"],
             "reference_rate": row["reference_rate"],
             "disabled": row["disabled"],
-        })
+        }
+        if "stored_learned_weight" in row:
+            entry["stored_learned_weight"] = row["stored_learned_weight"]
+        if "decay_freshness_multiplier" in row:
+            entry["decay_freshness_multiplier"] = row["decay_freshness_multiplier"]
+        picked_out.append(entry)
 
     return {
         "schema": "feedback_effect/1",
-        "weight_formula": "weight = (referenced/uses - 0.5) * 0.3 + (thumbs_up - thumbs_down) * 0.1; reference_rate=referenced/uses if uses>0 else 0",
-        "routing_applies": "rank_score += learned_weight (disabled skills get large negative score)",
+        "weight_formula": feedback_weight_formula_documentation(),
+        "routing_applies": routing_applies_documentation(),
         "picked": picked_out,
         "summary": {
             "picked_count": len(ordered),

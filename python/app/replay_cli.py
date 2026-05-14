@@ -7,8 +7,10 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import time
 
 from app.db_paths import resolve_orchestrator_db
+from app.events_query import fetch_events_for_replay, parse_replay_event_types
 
 
 def _replay_rows(
@@ -18,37 +20,20 @@ def _replay_rows(
     user_id: str,
     newest_first_snapshot: bool,
     limit: int,
+    event_types: tuple[str, ...] | None,
+    min_ts: float | None,
+    max_ts: float | None,
 ) -> list[tuple[float, str | None, str | None, str | None]]:
-    uid = (user_id or "").strip()
-    lim = max(1, min(int(limit), 5000))
-
-    cur: sqlite3.Cursor
-    if session_id and session_id.strip():
-        sid = session_id.strip()
-        cur = con.execute(
-            """
-            SELECT ts, session_id, event_type, payload
-            FROM events
-            WHERE user_id = ? AND session_id = ?
-            ORDER BY ts ASC
-            LIMIT ?
-            """,
-            (uid, sid, lim),
-        )
-    else:
-        order = "DESC" if newest_first_snapshot else "ASC"
-        cur = con.execute(
-            f"""
-            SELECT ts, session_id, event_type, payload
-            FROM events
-            WHERE user_id = ?
-            ORDER BY ts {order}
-            LIMIT ?
-            """,
-            (uid, lim),
-        )
-    rows = [(float(ts), sid, et, payload) for ts, sid, et, payload in cur.fetchall()]
-    return rows
+    return fetch_events_for_replay(
+        con,
+        user_id=user_id,
+        session_id=session_id,
+        newest_first_snapshot=newest_first_snapshot,
+        limit=limit,
+        event_types=event_types,
+        min_ts=min_ts,
+        max_ts=max_ts,
+    )
 
 
 def _format_human(ts: float, sid: str | None, et: str | None, payload_raw: str | None) -> str:
@@ -105,12 +90,48 @@ def main() -> None:
         action="store_true",
         help="Emit JSON array [{ts,session_id,event_type,payload}, …]",
     )
+    ap.add_argument(
+        "--min-ts",
+        type=float,
+        default=None,
+        metavar="UNIX_TS",
+        help="Only include events with ts >= this bound (inclusive).",
+    )
+    ap.add_argument(
+        "--max-ts",
+        type=float,
+        default=None,
+        metavar="UNIX_TS",
+        help="Only include events with ts <= this bound (inclusive).",
+    )
+    ap.add_argument(
+        "--event-types",
+        default="",
+        metavar="LIST",
+        help="Comma-separated event_type whitelist (default: all types).",
+    )
+    ap.add_argument(
+        "--since-days",
+        type=float,
+        default=None,
+        metavar="N",
+        help="Shorthand: set min-ts to (now − N×86400) unless --min-ts is set.",
+    )
     args = ap.parse_args()
 
     db_path = resolve_orchestrator_db((args.project_root or "").strip() or None)
     if not db_path.exists():
         print(f"No database yet: {db_path}")
         raise SystemExit(1)
+
+    min_ts = args.min_ts
+    if min_ts is None and args.since_days is not None:
+        if float(args.since_days) <= 0:
+            print("--since-days must be > 0.")
+            raise SystemExit(2)
+        min_ts = time.time() - float(args.since_days) * 86400.0
+
+    event_types = parse_replay_event_types(args.event_types)
 
     con = sqlite3.connect(str(db_path))
     sess = (args.session_id or "").strip() or None
@@ -120,6 +141,9 @@ def main() -> None:
         user_id=args.user,
         newest_first_snapshot=bool(args.newest_first),
         limit=args.limit,
+        event_types=event_types,
+        min_ts=min_ts,
+        max_ts=args.max_ts,
     )
     con.close()
 

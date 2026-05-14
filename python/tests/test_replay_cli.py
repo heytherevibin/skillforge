@@ -24,7 +24,16 @@ def test_replay_filters_session(tmp_path) -> None:
         ("2", 2.0, "u", "sess-b", "route", "{}"),
     )
     con.commit()
-    rows = _replay_rows(con, session_id="sess-a", user_id="u", newest_first_snapshot=False, limit=50)
+    rows = _replay_rows(
+        con,
+        session_id="sess-a",
+        user_id="u",
+        newest_first_snapshot=False,
+        limit=50,
+        event_types=None,
+        min_ts=None,
+        max_ts=None,
+    )
     con.close()
     assert len(rows) == 1
     assert rows[0][2] == "route"

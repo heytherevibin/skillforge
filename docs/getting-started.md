@@ -4,7 +4,7 @@
 
 Skillforge ships as **[@heytherevibin/skillforge](https://www.npmjs.com/package/@heytherevibin/skillforge)**. The **CLI** (`skillforge`) is a **Node.js** shim that installs a **managed Python virtualenv** under **`~/.skillforge/venv`** and runs **`python -m app.…`** with a consistent environment (`PYTHONPATH`, skill dirs, DB path). You do **not** need to activate the venv by hand.
 
-**Documentation matches this checkout’s release line:** **0.11.7** (**[`package.json` `version`](../package.json)**). On npm, **`npm view @heytherevibin/skillforge version`** is the registry truth—use **`@latest`** or **`npx -y`** to stay current.
+**Documentation matches this checkout's release line:** **0.11.18** (**[`package.json` `version`](../package.json)**). On npm, **`npm view @heytherevibin/skillforge version`** is the registry truth—use **`@latest`** or **`npx -y`** to stay current.
 
 ## 2. Prerequisites
 
@@ -55,10 +55,10 @@ Emit a snippet (stdout is JSON):
 
 ```bash
 skillforge mcp config
-# Add --local for a git checkout · --with-anthropic · --with-env (see MCP guide)
+skillforge mcp config --companion   # optional: fuse route_skills `conversation` into embeddings (preset env)
 ```
 
-**Instructions:**
+**`skillforge mcp config`** only prints JSON and does **not** provision the Python venv (**0.11.8**+); run **`skillforge install`** before **`skillforge mcp`**.
 
 1. Copy the **`mcpServers.skillforge`** object into your host config (example: **`~/.cursor/mcp.json`**).
 2. **Fully restart** the MCP host application after edits.
@@ -73,9 +73,7 @@ If **`SKILLFORGE_ROUTER_MODE`** is unset, Skillforge defaults to **`host`**:
 1. First **`route_skills`** → numbered **shortlist** (no **`picked_names`**).
 2. Second call → same **`prompt`** plus **`picked_names`** (`id1,id2` or enumerated picks from the listing).
 
-CLI mirrors this: **`skillforge route`** twice, or **`skillforge route -i`** on a TTY after the shortlist.
-
-Details: **[MCP integration](mcp-integration.md)**.
+For transcript-aware shortlists, configure **`skillforge mcp config --companion`** and pass **`route_skills`** **`conversation`** (same on both host calls). CLI mirrors this: **`skillforge route`** twice, or **`skillforge route -i`** on a TTY after the shortlist. Details: **[MCP integration](mcp-integration.md#companion-preset-mcp-json)**.
 
 ## 8. Operational habits
 
@@ -85,4 +83,4 @@ skillforge events --watch                 # routing / feedback tail
 skillforge replay --limit=20 [--json]
 ```
 
-Further reading:** [CLI reference](cli-reference.md)** · **[Architecture & data](architecture-and-data.md)**.
+Further reading: **[CLI reference](cli-reference.md)** · **[Architecture & data](architecture-and-data.md)**.

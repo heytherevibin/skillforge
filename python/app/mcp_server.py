@@ -11,6 +11,7 @@ Tools exposed:
   list_skills, skill_feedback, skill_referenced, disable_skill.
   capabilities — bundled snapshot (semver, MCP schema version, tool names, user_env_profile commands, router_snapshot) for session start.
   get_router_status, project_index_status, weights_snapshot, events_recent — read-only operator introspection.
+  route_memory_append / route_memory_list / route_memory_delete / route_memory_prune_expired — governed operator memories (SQLite, TTL) fused into embedding routing when SKILLFORGE_ROUTE_MEMORY is on.
 
 Run as: python -m app.mcp_server
 Speaks MCP over stdio (the protocol's standard transport for local servers).
@@ -56,6 +57,7 @@ from app.mcp_operator import (
 )
 from app.npm_pkg_version import published_package_version
 from app.redaction import redaction_enabled, redact_display_path
+from app.route_memories import memory_append, memory_delete, memory_list, memory_prune_expired
 from app.route_policies import (
     load_route_policies_config,
     merge_project_notes_into_route_query,
@@ -230,7 +232,10 @@ class MCPServer:
                         "only — returns a tight numbered shortlist + session_id; (2) call again with the same prompt "
                         "and picked_names (JSON array of exact catalog ids from the list) to load SKILL.md chunks. "
                         "Set SKILLFORGE_ROUTER_MODE=auto (or embedding/full) for one-call routing when configured. "
-                        "Optional conversation, project_root, include_project_rag. picked_names may also be passed "
+                        "For continuity across turns, pass conversation (recent chat as {role, content}) whenever "
+                        "SKILLFORGE_ROUTER_CONV_MAX_TURNS > 0 (use skillforge mcp config --companion); reuse session_id "
+                        "and send the same conversation on both host-mode calls. Optional project_root, "
+                        "include_project_rag. picked_names may also be passed "
                         "in embedding/full/auto to skip auto-pick and use the host-provided list."
                     ),
                     "inputSchema": {
@@ -259,12 +264,25 @@ class MCPServer:
                             },
                             "conversation": {
                                 "type": "array",
-                                "description": "Optional recent messages for context",
+                                "description": (
+                                    "Recent chat turns as objects with string keys role (e.g. user, assistant) "
+                                    "and content (message text); fused into the embedding route query when "
+                                    "SKILLFORGE_ROUTER_CONV_MAX_TURNS > 0. Recommended on both host-mode route_skills "
+                                    "calls with the same session_id."
+                                ),
                                 "items": {"type": "object"},
                             },
                             "session_id": {
                                 "type": "string",
                                 "description": "Stable id for this chat; reuse across turns for reroute detection",
+                            },
+                            "dry_run": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": (
+                                    "When true, returns the same routing output but does not write sessions, "
+                                    "SQLite route telemetry, use counters, or last_route snapshot (staging connectors)."
+                                ),
                             },
                             "user_id": {
                                 "type": "string",
@@ -551,6 +569,78 @@ class MCPServer:
                         },
                     },
                 },
+                {
+                    "name": "route_memory_append",
+                    "description": (
+                        "Append an operator routing memory (SQLite, per user_id + project_scope). "
+                        "Fused into the embedding query before policy project_notes when "
+                        "`SKILLFORGE_ROUTE_MEMORY` is truthy."
+                    ),
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "body": {"type": "string", "description": "Non-empty memo text fused into routing (bounded)"},
+                            "skill_hint": {
+                                "type": "string",
+                                "description": "Optional opaque hint (stored; not automatically applied to picks)",
+                                "default": "",
+                            },
+                            "importance": {
+                                "type": "integer",
+                                "description": "Sort key when selecting memories (higher first)",
+                                "default": 0,
+                            },
+                            "ttl_days": {
+                                "type": "number",
+                                "description": "Optional days until expiry (omit/null = SKILLFORGE_ROUTE_MEMORY_DEFAULT_TTL_DAYS or no expiry)",
+                            },
+                            "project_root": {"type": "string"},
+                            "user_id": {"type": "string"},
+                        },
+                        "required": ["body"],
+                    },
+                },
+                {
+                    "name": "route_memory_list",
+                    "description": "List active route memories for this user + resolved project_scope (includes global-scope rows).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_root": {"type": "string"},
+                            "user_id": {"type": "string"},
+                            "limit": {"type": "integer", "default": 25, "description": "Max rows (1–500)"},
+                            "include_expired": {
+                                "type": "boolean",
+                                "default": False,
+                                "description": "When true, also list expired rows (debug)",
+                            },
+                        },
+                    },
+                },
+                {
+                    "name": "route_memory_delete",
+                    "description": "Delete one route memory row by id (scoped to user_id).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "memory_id": {"type": "string"},
+                            "project_root": {"type": "string"},
+                            "user_id": {"type": "string"},
+                        },
+                        "required": ["memory_id"],
+                    },
+                },
+                {
+                    "name": "route_memory_prune_expired",
+                    "description": "Delete expired route_memory rows globally (SQLite maintenance).",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {
+                            "project_root": {"type": "string", "description": "Selects orchestrator DB; prune is global within that DB"},
+                            "user_id": {"type": "string", "description": "Unused; accepted for MCP parity"},
+                        },
+                    },
+                },
             ]
         }
 
@@ -588,6 +678,14 @@ class MCPServer:
             return self._tool_weights_snapshot(args)
         if name == "events_recent":
             return self._tool_events_recent(args)
+        if name == "route_memory_append":
+            return self._tool_route_memory_append(args)
+        if name == "route_memory_list":
+            return self._tool_route_memory_list(args)
+        if name == "route_memory_delete":
+            return self._tool_route_memory_delete(args)
+        if name == "route_memory_prune_expired":
+            return self._tool_route_memory_prune_expired(args)
         raise ValueError(f"Unknown tool: {name}")
 
     async def _tool_route_skills(self, args):
@@ -624,6 +722,15 @@ class MCPServer:
         else:
             picked_names_from_host = None
 
+        def _dry_run_arg(v: object) -> bool:
+            if v is True:
+                return True
+            if isinstance(v, str) and v.strip().lower() in ("1", "true", "yes", "on"):
+                return True
+            return False
+
+        dry_run = _dry_run_arg(args.get("dry_run"))
+
         con = self._get_con(args)
         result = await run_route_turn(
             con,
@@ -636,11 +743,12 @@ class MCPServer:
             include_project_rag=self._include_project_rag_from_args(args),
             picked_names_from_host=picked_names_from_host,
             picked_names_from_host_supplied=picked_names_from_host_supplied,
+            dry_run=dry_run,
         )
         picked_names = result["picked_names"]
         reasoning = result["reasoning"]
         context_items = result.get("context_items") or []
-        if pr:
+        if pr and not result.get("dry_run"):
             try:
                 d = Path(pr).expanduser().resolve() / ".skillforge"
                 d.mkdir(parents=True, exist_ok=True)
@@ -689,6 +797,11 @@ class MCPServer:
             context_items=context_items,
             fusion=(result.get("event") or {}).get("context_fusion"),
             context_redaction=(result.get("event") or {}).get("context_redaction"),
+            routing_correlation_id=str(result.get("routing_correlation_id") or ""),
+            dry_run=bool(result.get("dry_run")),
+            decision_trace=(
+                result.get("decision_trace") if isinstance(result.get("decision_trace"), dict) else None
+            ),
         )
         if result.get("host_pick_shortlist"):
             meta["host_pick_shortlist"] = True
@@ -1080,7 +1193,122 @@ class MCPServer:
             },
         }
 
+    def _tool_route_memory_append(self, args):
+        body = args.get("body")
+        txt = body if isinstance(body, str) else ""
+        uid = self._mcp_user_id(args)
+        pr = self._project_root_from_args(args)
+        hint = args.get("skill_hint") or ""
+        if not isinstance(hint, str):
+            hint = str(hint)
+        imp_raw = args.get("importance", 0)
+        try:
+            imp = int(imp_raw) if imp_raw is not None else 0
+        except (TypeError, ValueError):
+            imp = 0
+        ttl: float | None = None
+        if "ttl_days" in args and args["ttl_days"] is not None:
+            try:
+                ttl = float(args["ttl_days"])
+            except (TypeError, ValueError):
+                ttl = None
+        con = self._get_con(args)
+        db_path = resolve_orchestrator_db(pr)
+        try:
+            mid, append_meta = memory_append(
+                con,
+                user_id=uid,
+                project_root=pr,
+                body=txt,
+                skill_hint=hint,
+                importance=imp,
+                ttl_days=ttl,
+            )
+        except ValueError as e:
+            return {
+                "content": [{"type": "text", "text": str(e)}],
+                "isError": True,
+            }
+        blob = json.dumps({"memory_id": mid, "append_meta": append_meta}, indent=2)
+        return {
+            "content": [{"type": "text", "text": f"# route_memory_append\n\n```json\n{blob}\n```"}],
+            "_meta": {
+                "tool": "route_memory_append",
+                "schema_version": MCP_RESPONSE_SCHEMA_VERSION,
+                "memory_id": mid,
+                "append_meta": append_meta,
+                "user_id": uid,
+                "orchestrator_db": redact_display_path(db_path) if redaction_enabled() else str(db_path),
+            },
+        }
+
+    def _tool_route_memory_list(self, args):
+        uid = self._mcp_user_id(args)
+        pr = self._project_root_from_args(args)
+        raw_lim = args.get("limit")
+        try:
+            limit = int(raw_lim) if raw_lim is not None else 25
+        except (TypeError, ValueError):
+            limit = 25
+        inc_raw = args.get("include_expired")
+        inc_exp = bool(inc_raw) if inc_raw is not None else False
+        con = self._get_con(args)
+        db_path = resolve_orchestrator_db(pr)
+        rows = memory_list(con, user_id=uid, project_root=pr, limit=limit, include_expired=inc_exp)
+        blob = json.dumps({"rows": rows, "count": len(rows)}, indent=2)
+        return {
+            "content": [{"type": "text", "text": f"# route_memory_list\n\n```json\n{blob}\n```"}],
+            "_meta": {
+                "tool": "route_memory_list",
+                "schema_version": MCP_RESPONSE_SCHEMA_VERSION,
+                "user_id": uid,
+                "returned_count": len(rows),
+                "include_expired": inc_exp,
+                "orchestrator_db": redact_display_path(db_path) if redaction_enabled() else str(db_path),
+            },
+        }
+
+    def _tool_route_memory_delete(self, args):
+        mid_raw = args.get("memory_id")
+        mid = str(mid_raw).strip() if mid_raw is not None else ""
+        if not mid:
+            return {"content": [{"type": "text", "text": "memory_id is required."}], "isError": True}
+        uid = self._mcp_user_id(args)
+        pr = self._project_root_from_args(args)
+        con = self._get_con(args)
+        db_path = resolve_orchestrator_db(pr)
+        ok = memory_delete(con, user_id=uid, memory_id=mid)
+        blob = json.dumps({"deleted": ok, "memory_id": mid}, indent=2)
+        return {
+            "content": [{"type": "text", "text": f"# route_memory_delete\n\n```json\n{blob}\n```"}],
+            "_meta": {
+                "tool": "route_memory_delete",
+                "schema_version": MCP_RESPONSE_SCHEMA_VERSION,
+                "deleted": ok,
+                "memory_id": mid,
+                "user_id": uid,
+                "orchestrator_db": redact_display_path(db_path) if redaction_enabled() else str(db_path),
+            },
+        }
+
+    def _tool_route_memory_prune_expired(self, args):
+        pr = self._project_root_from_args(args)
+        con = self._get_con(args)
+        db_path = resolve_orchestrator_db(pr)
+        n = memory_prune_expired(con)
+        blob = json.dumps({"deleted_rows": n}, indent=2)
+        return {
+            "content": [{"type": "text", "text": f"# route_memory_prune_expired\n\n```json\n{blob}\n```"}],
+            "_meta": {
+                "tool": "route_memory_prune_expired",
+                "schema_version": MCP_RESPONSE_SCHEMA_VERSION,
+                "deleted_rows": n,
+                "orchestrator_db": redact_display_path(db_path) if redaction_enabled() else str(db_path),
+            },
+        }
+
     # ---- JSON-RPC dispatcher ----
+
 
     async def dispatch(self, request):
         method = request.get("method")

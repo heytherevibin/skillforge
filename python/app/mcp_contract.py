@@ -8,6 +8,9 @@ Schema **1.5** adds optional ``route_quality`` (shortlist margins, hybrid diagno
 Schema **1.6** adds optional ``feedback_effect`` (per-pick learned weights / thumbs / uses used in ranking).
 Schema **1.7** adds optional ``routing_overlay`` (project exclude/boost/notes audit for embedding shortlist).
 Schema **1.8** bumps embedded ``route_quality`` to **route_quality/2** (ambiguous shortlist hints, diversify meta).
+Schema **1.9** adds ``routing_correlation_id``, ``dry_run``, and optional ``decision_trace`` (``SKILLFORGE_ROUTE_TRACE_LEVEL``).
+Schema **1.10** adds optional nested ``policy_shadow`` under ``route_quality`` when ``SKILLFORGE_ROUTE_POLICIES_SHADOW*`` defines an overlay for embedding-shortlist-only comparison (picks unchanged).
+Schema **1.11** adds optional ``route_quality.route_memory`` (routing fusion telemetry) and MCP ``route_memory_*`` tools for governed SQLite memories with TTL.
 """
 from __future__ import annotations
 
@@ -22,7 +25,7 @@ class _SkillBody(Protocol):
     body: str
 
 
-MCP_RESPONSE_SCHEMA_VERSION = "1.8"
+MCP_RESPONSE_SCHEMA_VERSION = "1.11"
 
 
 def build_route_skills_meta(
@@ -37,6 +40,9 @@ def build_route_skills_meta(
     context_items: list[dict[str, Any]] | None = None,
     fusion: dict[str, Any] | None = None,
     context_redaction: dict[str, Any] | None = None,
+    routing_correlation_id: str = "",
+    dry_run: bool = False,
+    decision_trace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build ``_meta`` for a route_skills-style response (success or structured error)."""
     sources: list[dict[str, Any]] = []
@@ -131,4 +137,8 @@ def build_route_skills_meta(
         meta["context_redaction"] = context_redaction
     if error:
         meta["error"] = error
+    meta["routing_correlation_id"] = str(routing_correlation_id or "").strip()
+    meta["dry_run"] = bool(dry_run)
+    if isinstance(decision_trace, dict) and decision_trace:
+        meta["decision_trace"] = decision_trace
     return meta

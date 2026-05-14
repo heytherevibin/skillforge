@@ -70,6 +70,10 @@ Policy JSON optionally embeds **`rules`**, **`exclude_skills`** / boosts / **`pr
 └── ...
 ```
 
+### Operator route memories (`route_memories`)
+
+SQLite **`route_memories`** lives next to **`skill_weights`** / **`events`** in the orchestrator. Scoped by **`user_id`** plus optional **`project_scope`** (**`SKILLFORGE_PROJECT_ROOT`**). With **`SKILLFORGE_ROUTE_MEMORY`**, MCP **`route_memory_*`** merges active rows **before** **`project_notes`**. Persisted **`events`** (**`route`**, **`host_shortlist`**) snapshot a bounded **`route_memory`** field for auditing. Storage is **local SQLite only** in this distro (no cloud sync).
+
 ### Learning + portability
 
 - **`skill_weights`** table mutated by MCP **`route_skills`**, **`skill_feedback`**, etc.

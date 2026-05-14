@@ -10,7 +10,13 @@
 
 **Skillforge** is a **local-first** SKILL.md orchestration layer: embeddings pick a **small routed set** per task (optional hybrid + LLM stages), SQLite stores **sessions, learned weights, and events**, optional **project RAG** augments prompts, and the **production surface** is **stdio MCP**. A **Node** CLI (**`skillforge`**) bootstraps a managed **Python venv** under **`~/.skillforge/venv`**, merges **`~/.skillforge/env`**, mirrors MCP behaviours in **`skillforge route`**, **`skillforge tools`**, **`skillforge agent`**, and exposes operator CLIs (**`health`**, **`events`**, **`weights`**).
 
-**Semantic versions** should align across **`package.json`**, git tags (**`vX.Y.Z`**), MCP **`initialize.serverInfo.version`**, **npm tarball**, and the **GitHub Release** artifact—see [`RELEASING.md`](RELEASING.md). **Published line on `main`:** **`0.11.7`** (same value in **[`package.json` `version`](package.json#L3)** and **[`CHANGELOG`](CHANGELOG.md)** top section). The **`package.json`** shield tracks **`main`**; **`npm`** / **`release`** shields track **published** artefacts and may briefly lag immediately after tagging.
+**Semantic versions** should align across **`package.json`**, git tags (**`vX.Y.Z`**), MCP **`initialize.serverInfo.version`**, **npm tarball**, and the **GitHub Release** artifact—see [`RELEASING.md`](RELEASING.md). **Published line on `main`:** **`0.11.18`** (same value in **[`package.json` `version`](package.json#L3)** and **[`CHANGELOG`](CHANGELOG.md)** top section). The **`package.json`** shield tracks **`main`**; **`npm`** / **`release`** shields track **published** artefacts and may briefly lag immediately after tagging.
+
+### Operator route memories vs policy `project_notes`
+
+- **`project_notes`** (from **`route policies`** JSON — see **[docs/environment-and-configuration.md](docs/environment-and-configuration.md)**): **repository-wide** routing overlays tied to **`project_root`** (**`exclude_skills`**, boosts, static notes prefixed into the embedding query). Prefer committing policies **with the repo** so teammates and CI share intent.
+- **Route memories** (`SKILLFORGE_ROUTE_MEMORY`, MCP **`route_memory_*`): **per-operator / per-machine** SQLite bullets fused **ahead of** **`project_notes`**. Prefer policies for canon; use memories for quirks so you avoid duplicating team rules in Git.
+- **No cloud sync:** Memories are **not** uploaded anywhere; portability = **SQLite backup** / same **`SKILLFORGE_DB_PATH`**. Hosted multi-device sync is **out of scope** for this CLI.
 
 ---
 
@@ -35,7 +41,8 @@
 ```bash
 npx --yes @heytherevibin/skillforge --help
 skillforge install            # provisions ~/.skillforge/venv when needed
-skillforge mcp config         # stdout JSON snippet → paste into ~/.cursor/mcp.json, then restart IDE
+skillforge mcp config              # stdout JSON snippet → paste into ~/.cursor/mcp.json, then restart IDE
+skillforge mcp config --companion # optional: conversation-aware routing env for MCP hosts
 skillforge tips && skillforge health --quick
 skillforge config init        # optional ~/.skillforge/env template · skillforge config validate
 ```

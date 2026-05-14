@@ -35,6 +35,10 @@ MCP_PUBLISHED_TOOL_NAMES: tuple[str, ...] = (
     "project_index_status",
     "weights_snapshot",
     "events_recent",
+    "route_memory_append",
+    "route_memory_list",
+    "route_memory_delete",
+    "route_memory_prune_expired",
 )
 
 
@@ -45,6 +49,7 @@ def _truthy(env_name: str, default: str = "0") -> bool:
 def build_router_status_dict(router: Router | None, *, skill_count: int) -> dict[str, Any]:
     """JSON-serializable operator snapshot for get_router_status."""
     from app import main as m
+    from app.route_memories import route_memory_cap_snapshot
 
     r = router
     rl = getattr(r, "router_llm", None) if r else None
@@ -72,6 +77,7 @@ def build_router_status_dict(router: Router | None, *, skill_count: int) -> dict
         "pick_max_per_source": os.getenv("SKILLFORGE_PICK_MAX_PER_SOURCE", "2").strip(),
         "route_ambiguity_disabled": _truthy("SKILLFORGE_ROUTE_AMBIGUITY_DISABLE", "0"),
         "mcp_server_semver": published_package_version(),
+        "route_memory": route_memory_cap_snapshot(),
     }
 
 
@@ -95,7 +101,9 @@ def build_capabilities_bundle(router: Router | None, *, skill_count: int) -> dic
             "get_skill_formats": ["card", "summary", "full"],
             "note": "`card`: routing-card text only; see `get_skill.format`. `summary|full`: SKILL.md excerpts.",
         },
-        "replay_cli": {"command": "skillforge replay [--session-id=…] [--user=…] [--json]"},
+        "replay_cli": {
+            "command": "skillforge replay [--session-id=…] [--user=…] [--min-ts TS] [--max-ts TS] [--event-types=T] [--since-days=N] [--json]"
+        },
         "user_env_profile": {
             "file": "~/.skillforge/env",
             "path_command": "skillforge config path",
@@ -113,6 +121,26 @@ def build_capabilities_bundle(router: Router | None, *, skill_count: int) -> dic
         "manifest": {
             "strict_catalog_env": "SKILLFORGE_SKILL_MANIFEST_STRICT",
             "lint_command": "skillforge skills lint [paths]",
+        },
+        "mcp_companion": {
+            "preset_command": "skillforge mcp config --companion",
+            "conversation_env_note": (
+                "Preset sets SKILLFORGE_ROUTER_CONV_MAX_TURNS=6 and SKILLFORGE_ROUTER_CONV_MSG_CHARS=400; "
+                "route_skills `conversation` is merged into the embedding query when turns > 0."
+            ),
+            "workflow": [
+                "Optional: call `capabilities` once per session for semver, advertised tools, and `router_snapshot`.",
+                (
+                    "`route_skills` (host step 1 — shortlist): set `project_root` to the workspace root, "
+                    "`prompt` to the current user task, reuse `session_id` within the chat thread, and pass "
+                    "`conversation` as recent messages (`{role, content}` objects). Omit `picked_names`."
+                ),
+                (
+                    "`route_skills` (host step 2 — load context): same `session_id`, same `prompt` and "
+                    "`conversation`, plus `picked_names` (exact catalog ids from the shortlist)."
+                ),
+                "Inject returned skill bodies into context before continuing.",
+            ],
         },
         "router_snapshot": build_router_status_dict(router, skill_count=skill_count),
     }
