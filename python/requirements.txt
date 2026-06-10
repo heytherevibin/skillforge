@@ -1,4 +1,4 @@
-anthropic>=0.39
+anthropic>=0.109.1
 openai>=1.40.0
 sentence-transformers>=2.7
 numpy>=1.26
