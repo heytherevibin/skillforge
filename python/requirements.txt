@@ -1,5 +1,5 @@
 anthropic>=0.39
 openai>=1.40.0
 sentence-transformers>=2.7
-numpy>=1.26
+numpy>=2.5.1
 rank-bm25>=0.2.2
